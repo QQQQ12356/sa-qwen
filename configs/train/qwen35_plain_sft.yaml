@@ -1,0 +1,58 @@
+data_mode: searchr1
+# Qwen3.5 纯文本 SFT 训练配置（无 Beacon、不压缩）
+# 数据：Search-R1 官方 messages 轨迹，loss 只对 assistant 输出计算。
+# 模型：Qwen3_5ForCausalLM 纯文本因果 LM（复用 plain_qwen3 装载）。
+# 与 Beacon 训练（configs/train/beacon_qwen35_searchr1.yaml）使用**同一份数据文件**，
+# 但本路径不挂任何压缩参数，可直接对比「压缩 vs 不压缩」。
+# 命令行可用 --set key=value 覆盖任意参数，不需要修改本文件。
+# 入口：scripts/20_native_train.sh   |  训练器：search_comp.trainer.plain_sft_trainer
+model_name_or_path: "Qwen/Qwen3.5-2B"
+
+# 数据：Search-R1 轨迹保留完整路径、不截断，max_length 仅用于 padding 上限。
+train_data_path: "outputs/data/searchr1/qwen3-4b-instruct-sft.jsonl"
+val_data_path: null            # 可选；设置后按 eval_steps 计算验证 loss
+max_length: 8192
+
+# 训练超参数
+per_device_batch_size: 1       # Search-R1 只支持 bs=1，用 grad_accum_steps 放大
+grad_accum_steps: 8
+learning_rate: 5.0e-5
+weight_decay: 0.01
+lr_scheduler_type: "constant"
+warmup_ratio: 0.0
+max_grad_norm: 1.0
+num_epochs: 1
+max_train_steps: null          # 非 null 时覆盖 num_epochs
+
+# 计算资源
+use_bf16: true
+optim: "adamw_bnb_8bit"        # LoRA + 8bit Adam，24GB 单卡可跑
+gradient_checkpointing: true
+
+# 日志与保存
+save_freq_steps: 1000
+log_freq_steps: 5
+eval_steps: 1000
+seed: 42
+
+# LoRA：冻结基础权重，只训练低秩适配器。保存的是 adapter，
+# 评测前需用 `python -m search_comp.trainer.merge_lora` 合并。
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+# LoRA 目标模块（可在命令行用 --set lora_target_modules=[...] 覆盖）。
+# 默认：标准注意力 + MLP 投影。
+# 如需仅适配 GatedDeltaNet 窗口内输入投影，改为：
+#   [in_proj_qkv, in_proj_a, in_proj_b]
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+
+exp_name: "qwen35_plain_sft_v1"
+output_dir: "outputs"

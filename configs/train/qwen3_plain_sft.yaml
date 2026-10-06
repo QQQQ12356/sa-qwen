@@ -1,0 +1,36 @@
+data_mode: searchr1
+# Qwen3 无压缩 SFT 基线
+model_name_or_path: Qwen/Qwen3-4B-Thinking-2507
+train_data_path: outputs/data/searchr1/qwen3-4b-instruct-sft.jsonl
+val_data_path: null
+max_length: 8192
+per_device_batch_size: 1
+grad_accum_steps: 8
+learning_rate: 5.0e-05
+weight_decay: 0.01
+lr_scheduler_type: constant
+warmup_ratio: 0.0
+max_grad_norm: 1.0
+num_epochs: 1
+max_train_steps: null
+use_bf16: true
+optim: adamw_bnb_8bit
+gradient_checkpointing: true
+save_freq_steps: 1000
+log_freq_steps: 5
+eval_steps: 1000
+seed: 42
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+- q_proj
+- k_proj
+- v_proj
+- o_proj
+- gate_proj
+- up_proj
+- down_proj
+exp_name: qwen3_plain_sft
+output_dir: outputs

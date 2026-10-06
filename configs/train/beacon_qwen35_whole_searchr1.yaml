@@ -1,0 +1,87 @@
+# Qwen3.5 整段 information 一次前向；保留混合层隔离机制。
+model_name_or_path: Qwen/Qwen3.5-2B
+distill_teacher_model_name_or_path: Qwen/Qwen3.5-2B
+distill_teacher_device: auto
+data_mode: searchr1
+train_data_path: outputs/data/searchr1/qwen3-4b-instruct-sft.jsonl
+learning_rate: 5.0e-05
+weight_decay: 0.01
+optim: adamw_bnb_8bit
+lr_scheduler_type: constant
+warmup_steps: 0
+max_grad_norm: 1.0
+use_bf16: true
+num_epochs: 1
+max_train_steps: 2000
+grad_accum_steps: 4
+logging_steps: 5
+save_freq_steps: 1000
+eval_steps: 10000
+val_data_path: null
+seed: 42
+exp_name: beacon_qwen35_whole_searchr1
+output_dir: outputs
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+- q_proj
+- k_proj
+- v_proj
+- o_proj
+- gate_proj
+- up_proj
+- down_proj
+gradient_checkpointing: false
+length_diagnostics_samples: 1000
+beacon:
+  enable_beacon: true
+  beacon_question_memory_v1: false
+  beacon_question_max_tokens: 128
+  beacon_readout_distill_weight: 0.1
+  beacon_output_distill_weight: 0.0
+  beacon_output_distill_temperature: 1.0
+  beacon_output_distill_tokens: 8
+  beacon_doc_region_split: false
+  beacon_ce_loss_weight: 1.0
+  beacon_continuation_loss_weight: 0.1
+  beacon_continuation_tokens: 4
+  beacon_continuation_per_beacon: false
+  beacon_window: 96
+  beacon_stride: 96
+  beacon_ratio: 16
+  beacon_keep_window: 1024
+  beacon_param: q k v
+  beacon_embed_init: eos
+  beacon_pos: append
+  beacon_attn: full-coverage
+  beacon_linear_writer_rank: 128
+  beacon_loss_chunk_size: 32
+  beacon_checkpoint_loss: true
+  beacon_cpu_offload_activations: true
+  beacon_cpu_offload_threshold: 2048
+  loss_segments:
+    think_tag:
+      enabled: true
+      weight: 1.0
+    think_content:
+      enabled: true
+      weight: 1.0
+    search_tag:
+      enabled: true
+      weight: 1.0
+    search_content:
+      enabled: true
+      weight: 1.0
+    answer_tag:
+      enabled: true
+      weight: 1.0
+    answer_content:
+      enabled: true
+      weight: 1.0
+    other:
+      enabled: true
+      weight: 1.0
+  beacon_information_mode: whole
+  beacon_information_loss: false

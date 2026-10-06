@@ -1,0 +1,33 @@
+# Qwen3.5 原生搜索轨迹 SFT（无 Beacon，标准 Trainer）
+# 数据：Search-R1 官方 messages 轨迹，与 configs/train/beacon_qwen35_searchr1.yaml
+#       使用**同一份文件**，原生 / Beacon 两条线可直接对比。
+# 命令行可用 --set key=value 覆盖任意参数，不需要修改本文件。
+model_name_or_path: "Qwen/Qwen3.5-2B"
+data_mode: "searchr1"
+train_data_path: "outputs/data/searchr1/qwen3-4b-instruct-sft.jsonl"
+val_data_path: null            # 可选；设置后 Trainer 按 eval_steps 计算验证 loss
+max_length: 8192
+per_device_batch_size: 1       # searchr1 collator 当前固定为 1
+grad_accum_steps: 4
+learning_rate: 5.0e-5
+weight_decay: 0.01
+optim: "adamw_bnb_8bit"        # LoRA + 8bit Adam，24GB 单卡可跑
+lr_scheduler_type: "constant"  # 与 beacon_qwen35_searchr1.yaml 对齐
+warmup_ratio: 0.0
+max_grad_norm: 1.0
+num_epochs: 1
+max_train_steps: null          # 非 null 时覆盖 num_epochs
+use_bf16: true
+gradient_checkpointing: true
+save_freq_steps: 1000
+log_freq_steps: 5
+eval_steps: 1000
+seed: 42
+# LoRA：冻结基础权重，只训练低秩适配器。保存的是 adapter，
+# 评测前需用 `python -m search_comp.trainer.merge_lora` 合并。
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+exp_name: "native_qwen3_searchr1_v1"
+output_dir: "outputs"

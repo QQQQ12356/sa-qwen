@@ -1,0 +1,137 @@
+# Qwen3.5 Beacon 训练 —— 使用 Search-R1 官方 SFT 轨迹（messages 格式）
+# 只压缩 <information> 检索文档块，损失只在 assistant 生成片段上计算。
+#
+# 训练数据（约 60MB，不在本仓库内）默认放在仓库相对路径下，需先自行获取：
+#   mkdir -p outputs/data/searchr1
+#   huggingface-cli download --repo-type dataset PeterJinGo/nq_hotpotqa_train \
+#       --include '*instruct-sft.jsonl' --local-dir outputs/data/searchr1
+# 已有该文件时也可以直接建软链，或命令行覆盖：
+#   --set train_data_path=/abs/path/to/qwen3-4b-instruct-sft.jsonl
+# LoRA 微调：冻结基础模型，只训练低秩适配器 + beacon 参数，降低显存开销。
+model_name_or_path: "Qwen/Qwen3.5-2B"
+# 优先替换为原生 SearchAgent SFT 的完整/已合并 checkpoint；词表必须与 student 一致。
+# 输出蒸馏当前暂停；仅重新开启时加载 teacher，teacher 不写入 student checkpoint。
+distill_teacher_model_name_or_path: "Qwen/Qwen3.5-2B"
+distill_teacher_device: "auto"  # auto 随模型用 GPU；cpu 节省 GPU 显存但降低速度
+data_mode: "searchr1"
+train_data_path: "outputs/data/searchr1/qwen3-4b-instruct-sft.jsonl"
+# 不截断 Search-R1 轨迹；每条样本保留完整的搜索、检索和回答过程。
+learning_rate: 5.0e-5
+weight_decay: 0.01
+optim: "adamw_bnb_8bit"
+lr_scheduler_type: "constant"
+warmup_steps: 0
+max_grad_norm: 1.0
+use_bf16: true
+# 训练终止方式二选一：
+#   方式一（按步数，推荐）：设置 max_train_steps，训练到恰好该优化器步数停止，覆盖 num_epochs。
+#     约 2.4w 条 / grad_accum 8 ≈ 3000 步/epoch，例如一份数据想用 1 epoch 就设 max_train_steps: 3000。
+#   方式二（按 epoch）:仅设 num_epochs（如上），按整个数据集轮次训练。
+# max_train_steps: 3000
+num_epochs: 1
+max_train_steps: 2000
+grad_accum_steps: 4
+# 实时日志：每多少优化器步打印一次 loss/grad_norm/lr（transformers.Trainer）
+logging_steps: 5
+save_freq_steps: 1000
+eval_steps: 10000
+val_data_path: null
+seed: 42
+exp_name: "beacon_qwen3_searchr1_v3"
+output_dir: "outputs"
+# LoRA 配置（use_lora: true 时生效）
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+# LoRA 目标模块（可在命令行用 --set lora_target_modules=[...] 覆盖）。
+# 默认：标准注意力 + MLP 投影。
+# 如只想适配窗口内 GatedDeltaNet 输入投影，改为：
+#   [in_proj_qkv, in_proj_a, in_proj_b]
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+# 混合 Beacon 使用显式跨窗状态，当前不做 Trainer 层级重计算。
+gradient_checkpointing: false
+# 启动时随机抽样多少条轨迹统计 token 长度，写入 dataset_summary.json。
+length_diagnostics_samples: 1000
+beacon:
+  enable_beacon: true
+  beacon_question_memory_v1: false
+  beacon_question_max_tokens: 128
+  beacon_readout_distill_weight: 0.1
+  # 暂停输出 KL 蒸馏，不加载 teacher；保留配置以便后续重新开启。
+  beacon_output_distill_weight: 0.0
+  beacon_output_distill_temperature: 1.0
+  beacon_output_distill_tokens: 8
+  # 子文档压缩区切分 + 非首窗续写损失。window 必须**小于子文档长度**才会有第二个
+  # 窗口，否则续写损失恒不触发。实测 Search-R1 语料子文档长度 p50=154 / max=310
+  # token（Qwen3.5-2B 分词器，300 样本 / 1302 个子文档）：
+  #   window=512 → 覆盖率 0%（每个子文档仅 1 窗）；window=96 → 覆盖率 100%、平均 2.03 窗。
+  beacon_doc_region_split: true
+  # 主 CE 与续写损失按**份额**归一（不再是绝对乘子）：
+  #   L = (w_ce·ce + w_cont·cont) / (w_ce + w_cont)
+  # 分母只统计本次前向实际出现的项，所以没有压缩段的样本自动退化回 L = ce，
+  # 只开 CE 时改 w_ce 也不改变尺度。例：0.3 / 0.7 → 0.3·ce + 0.7·cont。
+  # 当前 1.0 / 0.1 → (ce + 0.1·cont)/1.1；无续写目标时退化为 ce。
+  # 两种蒸馏都是独立加项，不进这个分母。
+  beacon_ce_loss_weight: 1.0
+  beacon_continuation_loss_weight: 0.1
+  beacon_continuation_tokens: 4
+  # 续写监督粒度二选一（beacon_continuation_tokens = 每个读出点预测的目标数 k）：
+  #   false（当前）= 子文档**非首窗**窗头监督前 k 个 token，k 个目标各读窗头一行隐状态；
+  #   true  = 窗内**每个 chunk** 的 beacon 监督其后 k 个 token，k 个目标**共用** beacon
+  #           那一行。目标恒钳制在压缩段内（不跨子文档）。
+  # window == ratio 时一窗一 chunk，隔离来自**窗口边界**（窗末只提交 beacon、丢弃原始
+  # K/V），「仅凭压缩记忆预测」严格成立；window > ratio 时窗内有多个 chunk，**必须**配
+  # beacon_pos: intersect（append 的 beacon 全贴窗末、位置不对应任何 chunk 边界），此时
+  # 窗内 chunk **不互相隔离** —— 后一个 chunk 的 token 同时读得到更早 chunk 的原始 token
+  # 与其 beacon（掩码挡不住：attn_mask 只管 full-attention 层，linear-attention 层是无
+  # 掩码的循环扫描；实测见 tests/test_beacon_window_visibility.py）。这是拿间隔离换前向
+  # 次数的取舍：文档区前向次数 = 段长 / window（而非段长 / ratio，96→16 即 6 倍）。
+  # keep 段仍由 beacon_keep_window 独立控制粒度，不受影响。
+  beacon_continuation_per_beacon: false
+  beacon_window: 96
+  beacon_stride: 96
+  beacon_ratio: 16
+  # keep 段（提示词 / 模型生成内容）不逐窗切分：切窗粒度不影响结果，只影响前向次数
+  # 与峰值显存。实测 keep 段长度 p50=236 / p99=641 / max=1288 token；不切窗使
+  # keep 前向从 2294 降到 734（-68%）。1024 是长尾保护上限（超出才切），
+  # 设为 0 即完全不切，None 为历史行为（跟随 beacon_window）。
+  beacon_keep_window: 1024
+  beacon_param: "q k v"
+  beacon_embed_init: "eos"
+  beacon_pos: "append"
+  beacon_attn: "full-coverage"
+  beacon_linear_writer_rank: 128
+  # 只对 labels != -100 的位置计算 LM head；分块越小峰值显存越低、速度略慢。
+  beacon_loss_chunk_size: 32
+  # 反向时重算每个 loss chunk 的 LM head，避免保存巨大 full-vocab logits。
+  beacon_checkpoint_loss: true
+  # 24GB 单卡长尾保护：只对超长样本把 autograd 保存激活卸载到 CPU。
+  beacon_cpu_offload_activations: true
+  beacon_cpu_offload_threshold: 2048
+  # 分段损失：控制「哪些片段计损失、各占多少权重」。
+  #   L = Σ w_i·CE_i / Σ w_i   （分母是权重和）
+  # 调权重只改变类别之间的份额，不会整体放大损失或有效学习率；
+  # enabled=false 等价于 weight=0（该类既不进分子也不进分母）。
+  # 全部 enabled + weight=1.0 时与不加权逐位一致（即下面的默认值）。
+  #
+  # 类别：think_tag / think_content / search_tag / search_content /
+  #       answer_tag / answer_content / other
+  # 实测 4000 条轨迹的监督 token 占比：thinking 87.3%、search query 3.5%、
+  # answer 仅 1.0%（平均 3.7 个 token）。answer 想占到损失的 ~10%，
+  # answer_content 需要设到 10~50 量级（算式见 docs/loss_segments.md）。
+  loss_segments:
+    think_tag:      {enabled: true, weight: 1.0}
+    think_content:  {enabled: true, weight: 1.0}
+    search_tag:     {enabled: true, weight: 1.0}
+    search_content: {enabled: true, weight: 1.0}
+    answer_tag:     {enabled: true, weight: 1.0}
+    answer_content: {enabled: true, weight: 1.0}
+    other:          {enabled: true, weight: 1.0}

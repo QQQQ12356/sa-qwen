@@ -1,0 +1,37 @@
+# ================= 训练 / 评测产物（体积大，不入库） =================
+# 语料约 70MB、checkpoint 单个上百 MB，推送会撑爆仓库；请由脚本按需重建：
+#   outputs/data/    <- scripts/20、22、23 首次运行自动构建
+#   outputs/models/  <- 训练输出
+#   outputs/logs/    <- 终端日志副本
+outputs/models/
+outputs/data/
+outputs/logs/
+outputs/results/
+outputs/*.json
+
+# 例外：已入库的小体积证据产物继续跟踪（tracked 文件不受本文件影响）：
+#   outputs/results/*/predictions*.jsonl       评测逐题轨迹
+#   outputs/results/*/predictions_metrics.json 汇总指标
+# 新增证据产物请显式 `git add -f <path>`，并在提交说明中注明体积。
+
+# ================= 模型权重 / 大二进制 =================
+# 基础模型从 Hugging Face 拉取（默认 Qwen/Qwen3.5-2B），不要提交到本仓库。
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+*.onnx
+
+# ================= Python =================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ================= 编辑器 / 系统 =================
+.idea/
+.vscode/
+*.swp
+.DS_Store
