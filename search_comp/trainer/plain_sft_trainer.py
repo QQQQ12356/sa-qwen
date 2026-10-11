@@ -14,7 +14,7 @@
   的组织方式。
 
 ``use_lora: true`` 时冻结基础权重只训练低秩适配器，保存的是 adapter；
-评测前需用 :mod:`search_comp.trainer.merge_lora` 合并为完整 checkpoint
+训练结束后自动用 :mod:`search_comp.trainer.merge_lora` 合并到 ``final_merged/``
 （Beacon 版对应 :mod:`search_comp.trainer.merge_beacon_lora`）。
 
 用法::
@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import time
 from typing import Any, Dict, List
 
@@ -226,11 +228,24 @@ def main_train(
     if use_lora:
         print(
             f"[plain-train] 已保存 LoRA adapter -> {ckpt_dir}\n"
-            f"[plain-train] 评测前请先合并: python -m search_comp.trainer.merge_lora "
-            f"--base_model_path {cfg['model_name_or_path']} "
-            f"--adapter_path {ckpt_dir} --output_path {ckpt_dir}_merged",
+            "[plain-train] 开始在 CPU 上合并 LoRA adapter",
             flush=True,
         )
+        merged_dir = f"{ckpt_dir}_merged"
+        subprocess.run(
+            [
+                sys.executable, "-m", "search_comp.trainer.merge_lora",
+                "--base_model_path", cfg["model_name_or_path"],
+                "--adapter_path", ckpt_dir,
+                "--output_path", merged_dir,
+                "--device-map", "cpu",
+            ],
+            check=True,
+        )
+        summary["final_adapter_path"] = ckpt_dir
+        summary["final_model_path"] = merged_dir
+        write_json(os.path.join(exp_dir, "train_summary.json"), summary)
+        print(f"[plain-train] 已保存合并模型 -> {merged_dir}", flush=True)
     else:
         print(f"[plain-train] 已保存最终模型 -> {ckpt_dir}", flush=True)
 

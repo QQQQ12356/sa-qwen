@@ -19,6 +19,7 @@ save_freq_steps: 1000
 eval_steps: 10000
 val_data_path: null
 seed: 42
+shuffle_train_data: true
 exp_name: beacon_qwen35_whole_searchr1
 output_dir: outputs
 use_lora: true
@@ -48,10 +49,9 @@ beacon:
   beacon_continuation_loss_weight: 0.1
   beacon_continuation_tokens: 4
   beacon_continuation_per_beacon: false
-  beacon_window: 96
-  beacon_stride: 96
   beacon_ratio: 16
-  beacon_keep_window: 1024
+  beacon_keep_window: 0
+  beacon_window_enabled: false
   beacon_param: q k v
   beacon_embed_init: eos
   beacon_pos: append

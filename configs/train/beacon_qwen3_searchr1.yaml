@@ -19,6 +19,7 @@ save_freq_steps: 1000
 eval_steps: 10000
 val_data_path: null
 seed: 42
+shuffle_train_data: true
 exp_name: beacon_qwen3_searchr1
 output_dir: outputs
 use_lora: true

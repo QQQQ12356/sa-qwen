@@ -37,6 +37,7 @@ save_freq_steps: 1000
 eval_steps: 10000
 val_data_path: null
 seed: 42
+shuffle_train_data: true  # false 按 JSONL 原始顺序；true 使用 seed 控制随机采样
 exp_name: "beacon_qwen3_searchr1_v3"
 output_dir: "outputs"
 # LoRA 配置（use_lora: true 时生效）
@@ -62,6 +63,9 @@ gradient_checkpointing: false
 length_diagnostics_samples: 1000
 beacon:
   enable_beacon: true
+  # 整段处理 information 和 keep；旧 window/stride 长度不再生效。
+  beacon_information_mode: whole
+  beacon_window_enabled: false
   beacon_question_memory_v1: false
   beacon_question_max_tokens: 128
   beacon_readout_distill_weight: 0.1
@@ -69,11 +73,8 @@ beacon:
   beacon_output_distill_weight: 0.0
   beacon_output_distill_temperature: 1.0
   beacon_output_distill_tokens: 8
-  # 子文档压缩区切分 + 非首窗续写损失。window 必须**小于子文档长度**才会有第二个
-  # 窗口，否则续写损失恒不触发。实测 Search-R1 语料子文档长度 p50=154 / max=310
-  # token（Qwen3.5-2B 分词器，300 样本 / 1302 个子文档）：
-  #   window=512 → 覆盖率 0%（每个子文档仅 1 窗）；window=96 → 覆盖率 100%、平均 2.03 窗。
-  beacon_doc_region_split: true
+  # 每轮 information 正文作为一个完整压缩区，不按子文档拆分。
+  beacon_doc_region_split: false
   # 主 CE 与续写损失按**份额**归一（不再是绝对乘子）：
   #   L = (w_ce·ce + w_cont·cont) / (w_ce + w_cont)
   # 分母只统计本次前向实际出现的项，所以没有压缩段的样本自动退化回 L = ce，
@@ -83,27 +84,12 @@ beacon:
   beacon_ce_loss_weight: 1.0
   beacon_continuation_loss_weight: 0.1
   beacon_continuation_tokens: 4
-  # 续写监督粒度二选一（beacon_continuation_tokens = 每个读出点预测的目标数 k）：
-  #   false（当前）= 子文档**非首窗**窗头监督前 k 个 token，k 个目标各读窗头一行隐状态；
-  #   true  = 窗内**每个 chunk** 的 beacon 监督其后 k 个 token，k 个目标**共用** beacon
-  #           那一行。目标恒钳制在压缩段内（不跨子文档）。
-  # window == ratio 时一窗一 chunk，隔离来自**窗口边界**（窗末只提交 beacon、丢弃原始
-  # K/V），「仅凭压缩记忆预测」严格成立；window > ratio 时窗内有多个 chunk，**必须**配
-  # beacon_pos: intersect（append 的 beacon 全贴窗末、位置不对应任何 chunk 边界），此时
-  # 窗内 chunk **不互相隔离** —— 后一个 chunk 的 token 同时读得到更早 chunk 的原始 token
-  # 与其 beacon（掩码挡不住：attn_mask 只管 full-attention 层，linear-attention 层是无
-  # 掩码的循环扫描；实测见 tests/test_beacon_window_visibility.py）。这是拿间隔离换前向
-  # 次数的取舍：文档区前向次数 = 段长 / window（而非段长 / ratio，96→16 即 6 倍）。
-  # keep 段仍由 beacon_keep_window 独立控制粒度，不受影响。
+  # whole 模式对 information 正文做逐 token 因果续写；下列窗头选项不生效。
   beacon_continuation_per_beacon: false
-  beacon_window: 96
-  beacon_stride: 96
+  # 旧窗口长度字段仅用于兼容，不限制前向长度。
   beacon_ratio: 16
-  # keep 段（提示词 / 模型生成内容）不逐窗切分：切窗粒度不影响结果，只影响前向次数
-  # 与峰值显存。实测 keep 段长度 p50=236 / p99=641 / max=1288 token；不切窗使
-  # keep 前向从 2294 降到 734（-68%）。1024 是长尾保护上限（超出才切），
-  # 设为 0 即完全不切，None 为历史行为（跟随 beacon_window）。
-  beacon_keep_window: 1024
+  # 提示词 / 模型输出 / 标签构成的连续 keep 段整段计算。
+  beacon_keep_window: 0
   beacon_param: "q k v"
   beacon_embed_init: "eos"
   beacon_pos: "append"

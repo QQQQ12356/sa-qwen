@@ -1,5 +1,1 @@
-"""SFT 训练器。"""
-
-from .sft_trainer import BeaconSFTTrainer, TrainerConfig
-
-__all__ = ["BeaconSFTTrainer", "TrainerConfig"]
+"""训练入口；Beacon SFT 使用 search_comp.trainer.beacon_trainer。"""

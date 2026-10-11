@@ -34,7 +34,9 @@ if [[ $# -gt 0 ]]; then shift; fi
 # WINDOW_ENABLED: false 暂停旧窗口参数（需 whole），true 恢复。
 # BEACON_RATIO / BEACON_WINDOW / BEACON_STRIDE: 压缩率 / 历史模式窗口大小。
 BEACON_OVERRIDES=()
+# SHUFFLE_TRAIN_DATA=true 随机打乱，false 按 JSONL 原始顺序。
 for pair in 'MODEL_NAME_OR_PATH:model_name_or_path' \
+            'SHUFFLE_TRAIN_DATA:shuffle_train_data' \
             'INFORMATION_MODE:beacon.beacon_information_mode' \
             'BEACON_POS:beacon.beacon_pos' \
             'INFORMATION_LOSS:beacon.beacon_information_loss' \

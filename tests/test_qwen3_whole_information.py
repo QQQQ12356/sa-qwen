@@ -204,6 +204,24 @@ def test_paused_windows_ignore_window_and_stride_for_information_and_keep():
     assert '暂停' in config.describe_layout()
 
 
+def test_training_disables_all_length_windows_for_two_information_rounds(model):
+    from search_comp.trainer.beacon_trainer import configure_whole_trajectory
+
+    cfg = {"beacon": model.beacon_config.to_dict()}
+    cfg["beacon"].update(beacon_window=0, beacon_stride=-1, beacon_keep_window=1,
+                         beacon_doc_region_split=True)
+    configure_whole_trajectory(cfg)
+    config = BeaconConfig.from_dict(cfg["beacon"])
+    model.set_beacon_config(config)
+    ids = torch.arange(10, 40).unsqueeze(0)
+    with patch.object(model, '_window_hidden', wraps=model._window_hidden) as forward:
+        model.prefill_and_get_cache(ids, [(5, 13), (18, 26)])
+    assert forward.call_count == 5  # three whole keep segments and two information blocks
+    assert not config.beacon_window_enabled
+    assert config.beacon_keep_window == 0
+    assert not config.beacon_doc_region_split
+
+
 @pytest.mark.parametrize('position', ['append', 'intersect'])
 def test_qwen3_discards_exact_original_information_kv_before_decoding(position):
     model = tiny_qwen3()

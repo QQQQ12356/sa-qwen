@@ -151,6 +151,17 @@ class _SaveBeaconCheckpoints(TrainerCallback):
         print(f"[beacon] 训练结束，adapter/state 已保存到 {final_dir}", flush=True)
 
 
+def configure_whole_trajectory(cfg: dict) -> None:
+    """SFT 不按长度切窗；旧 YAML 的窗口选项不再限制轨迹计算。"""
+    beacon = cfg.setdefault("beacon", {})
+    beacon.update(
+        beacon_information_mode="whole",
+        beacon_window_enabled=False,
+        beacon_doc_region_split=False,
+        beacon_keep_window=0,
+    )
+
+
 def main_train(
     config_path: str,
     overrides=(),
@@ -158,6 +169,10 @@ def main_train(
     from ..models.model_loader import load_beacon_model
 
     cfg = load_yaml_config(config_path, overrides)
+    configure_whole_trajectory(cfg)
+    shuffle_train_data = cfg.setdefault("shuffle_train_data", True)
+    if not isinstance(shuffle_train_data, bool):
+        raise ValueError("shuffle_train_data 必须为 bool（true 或 false）")
     from ..data.searchr1_dataset import require_searchr1_mode
     require_searchr1_mode(cfg.get("data_mode", "searchr1"))
     require_keys(cfg, ("model_name_or_path", "train_data_path", "output_dir", "exp_name"))
@@ -170,6 +185,7 @@ def main_train(
     tokenizer.pad_token = tokenizer.eos_token
 
     beacon_cfg = BeaconConfig.from_dict(cfg.get("beacon", {}))
+    print(f"[beacon] SFT 已取消长度分窗：{beacon_cfg.describe_layout()}", flush=True)
     model = load_beacon_model(cfg["model_name_or_path"], beacon_config=beacon_cfg)
     model.train()
     if cfg.get("gradient_checkpointing", False):
@@ -284,6 +300,7 @@ def main_train(
         report_to=[],                            # 不写 wandb/tensorboard
         remove_unused_columns=False,             # 保留 collator 的 regions 透传给 forward
         seed=cfg.get("seed", 42),
+        train_sampling_strategy="random" if shuffle_train_data else "sequential",
         disable_tqdm=False,                      # 实时进度条
         fp16=False,
         bf16=cfg.get("use_bf16", True),
@@ -354,7 +371,11 @@ def main_train(
         },
     )
     print(f"[beacon] 长度抽样统计: {length_summary}", flush=True)
-    print("[beacon] 开始训练 ...", flush=True)
+    print(
+        f"[beacon] 数据顺序={'随机打乱' if shuffle_train_data else 'JSONL 原始顺序'}；"
+        f"seed={cfg.get('seed', 42)}，开始训练 ...",
+        flush=True,
+    )
     try:
         train_result = trainer.train()
     except torch.OutOfMemoryError as error:

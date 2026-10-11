@@ -36,7 +36,7 @@ eval_steps: 1000
 seed: 42
 
 # LoRA：冻结基础权重，只训练低秩适配器。保存的是 adapter，
-# 评测前需用 `python -m search_comp.trainer.merge_lora` 合并。
+# 训练结束后自动在 CPU 上合并到 final_merged，final 中保留 adapter。
 use_lora: true
 lora_r: 16
 lora_alpha: 32

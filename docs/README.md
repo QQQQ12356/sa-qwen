@@ -2,7 +2,7 @@
 
 ## 数据范围
 
-训练仅支持 `data_mode: searchr1`，数据为 Search-R1 `messages` JSONL。Beacon Trainer、原生 Trainer、plain SFT Trainer 与保留的 Accelerate 入口都会校验数据模式；旧 `interactive` 和 `single` 格式不再接受。
+训练仅支持 `data_mode: searchr1`，数据为 Search-R1 `messages` JSONL。Beacon Trainer、原生 Trainer与 plain SFT Trainer 都会校验数据模式；旧 `interactive` 和 `single` 格式不再接受。Beacon SFT 统一使用标准 `search_comp.trainer.beacon_trainer` 入口。
 
 已移除旧交互轨迹 Dataset、轨迹构建器、手写轨迹序列拼接和对应 YAML，以及旧单轮 RAG 训练数据管线。在线多轮检索推理继续保留：推理模块和脚本名称中的 `interactive` 表示 SearchAgent 在线搜索行为，不是已删除的训练数据模式。
 
@@ -86,9 +86,8 @@ L = L_main + w_readout * readout + w_output * output_KL
 | 配置 | 用途 |
 | --- | --- |
 | `beacon_qwen3_searchr1.yaml` | 默认 Qwen3 整段模式，窗口暂停，LoRA |
-| `sft_beacon_searchr1.yaml` | 保留的 Accelerate Search-R1 入口，Qwen3 整段模式 |
 | `beacon_qwen35_whole_searchr1.yaml` | Qwen3.5 整段 information 模式 |
-| `beacon_qwen35_searchr1.yaml` | Qwen3.5 原有窗口 / 子文档配置，供显式选择 |
+| `beacon_qwen35_searchr1.yaml` | Qwen3.5 整段模式，取消窗口和子文档切分 |
 | `qwen3_plain_sft.yaml` / `qwen35_plain_sft.yaml` | 两种模型的无压缩 Search-R1 基线 |
 | `native_qwen35.yaml` | 原生 Trainer 的 Search-R1 配置 |
 
