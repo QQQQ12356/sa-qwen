@@ -58,7 +58,9 @@ class BeaconConfig:
     #: 提交压缩记忆后的输出 KL 蒸馏；0 保持旧训练行为。
     beacon_output_distill_weight: float = 0.0
     beacon_output_distill_temperature: float = 1.0
-    #: 每个压缩后的 keep 段，只读出前 k 个有效监督位置。
+    #: all 覆盖全部 CE token；prefix / stratified 使用每段预算。
+    beacon_output_distill_strategy: str = "all"
+    #: 仅 prefix / stratified 使用，每个压缩后 keep 段的采样预算。
     beacon_output_distill_tokens: int = 8
     #: 把 ``<information>`` 块按子文档切成多个压缩区（每篇文档独立一个窗口序列）。
     #: 开启后「同一压缩段的非首窗」等价于「同一篇文档的续写窗」，供续写损失使用。
@@ -128,6 +130,8 @@ class BeaconConfig:
             raise ValueError("beacon_output_distill_weight 必须为有限非负数")
         if not 0 < self.beacon_output_distill_temperature < float("inf"):
             raise ValueError("beacon_output_distill_temperature 必须为有限正数")
+        if self.beacon_output_distill_strategy not in {"all", "prefix", "stratified"}:
+            raise ValueError("beacon_output_distill_strategy 必须为 all、prefix 或 stratified")
         if self.beacon_output_distill_tokens <= 0:
             raise ValueError("beacon_output_distill_tokens 必须为正数")
         if self.beacon_question_max_tokens <= 0:

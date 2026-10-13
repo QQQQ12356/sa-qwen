@@ -126,3 +126,24 @@ def test_dataset_warns_on_legacy_document_format(tokenizer, tmp_path, capsys):
 
     SearchR1SFTDataset(str(_write("unified.jsonl", [unified])), tokenizer)
     assert "旧格式文档块" not in capsys.readouterr().out
+
+
+def test_stratified_distillation_gets_categories_with_default_ce(tokenizer, tmp_path):
+    from search_comp.loss_segments import LossSegmentConfig, SEGMENT_IDS
+    from search_comp.trainer.beacon_distillation_trainer import select_distillation_positions
+    data = tmp_path / "sft.jsonl"
+    _write_sample(str(data))
+    ordinary = SearchR1SFTDataset(str(data), tokenizer, loss_segments=LossSegmentConfig())[0]
+    categorized = SearchR1SFTDataset(str(data), tokenizer, loss_segments=LossSegmentConfig(),
+                                    return_loss_segment_ids=True)[0]
+    assert ordinary["loss_segment_ids"] is None
+    assert ordinary["input_ids"] == categorized["input_ids"]
+    assert ordinary["labels"] == categorized["labels"]
+    batch = SearchR1Collator(tokenizer)([categorized])
+    all_rows = select_distillation_positions(batch["labels"], batch["regions"], strategy="all")
+    assert all_rows.numel() == (batch["labels"][:, 1:] != -100).sum()
+    rows = select_distillation_positions(batch["labels"], batch["regions"], 8, "stratified",
+                                         batch["loss_segment_ids"])
+    categories = set(batch["loss_segment_ids"][0, rows + 1].tolist())
+    assert SEGMENT_IDS["think_content"] in categories
+    assert SEGMENT_IDS["answer_content"] in categories

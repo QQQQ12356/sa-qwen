@@ -1,6 +1,6 @@
 """加载 Qwen3.5 的**纯文本**因果 LM（``Qwen3_5ForCausalLM``）。
 
-基础 checkpoint ``Qwen/Qwen3.5-2B`` 是**多模态** ``Qwen3_5ForConditionalGeneration``，
+基础 checkpoint ``Qwen/Qwen3.5-4B`` 是**多模态** ``Qwen3_5ForConditionalGeneration``，
 其文本主干嵌套在 ``model.language_model`` 下。本模块把文本权重重新装载进
 ``Qwen3_5ForCausalLM``（负词表、仅文本、无 vision encoder），用于 SFT 训练
 与 Beacon 移植的基线：
@@ -40,7 +40,7 @@ def _remap_key(key: str) -> str | None:
 
 
 def load_text_causal_model(
-    model_name_or_path: str = "Qwen/Qwen3.5-2B",
+    model_name_or_path: str = "Qwen/Qwen3.5-4B",
     torch_dtype: torch.dtype = torch.bfloat16,
     device_map: str = "auto",
     trust_remote_code: bool = True,
@@ -124,7 +124,7 @@ def load_text_causal_model(
     return model
 
 
-def load_text_tokenizer(model_name_or_path: str = "Qwen/Qwen3.5-2B"):
+def load_text_tokenizer(model_name_or_path: str = "Qwen/Qwen3.5-4B"):
     """装载 Qwen3.5 tokenizer（与纯文本模型共享）。"""
     from .qwen35_native import load_tokenizer
 

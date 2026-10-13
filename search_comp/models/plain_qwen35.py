@@ -3,7 +3,7 @@
 和 Beacon 路径各用一个建模模块相对应，本模块是「普通因果推理 SFT 定制全链接口」：
 
 - Beacon 侧：:mod:`search_comp.models.beacon_qwen35`，在窗口上挂压缩参数。
-- 本模块：直接把 ``Qwen/Qwen3.5-2B``（多模态 ``ForConditionalGeneration``）的
+- 本模块：直接把 ``Qwen/Qwen3.5-4B``（多模态 ``ForConditionalGeneration``）的
   文本主干装载为 ``Qwen3_5ForCausalLM``，无任何压缩参数，走标准因果 LM 前向。
 
 权重装载逻辑复用 :func:`search_comp.milestones.qwen35_text.load_text_causal_model`
@@ -13,8 +13,8 @@
 ```python
 from search_comp.models.plain_qwen35 import load_sft_model, load_sft_tokenizer
 
-model = load_sft_model("Qwen/Qwen3.5-2B")
-tokenizer = load_sft_tokenizer("Qwen/Qwen3.5-2B")
+model = load_sft_model("Qwen/Qwen3.5-4B")
+tokenizer = load_sft_tokenizer("Qwen/Qwen3.5-4B")
 ```
 """
 
@@ -28,7 +28,7 @@ import torch
 PLAIN_SFT_ARCH = "Qwen3_5ForCausalLM"
 
 #: 默认基础 checkpoint。
-DEFAULT_MODEL = "Qwen/Qwen3.5-2B"
+DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
 
 
 def load_sft_model(

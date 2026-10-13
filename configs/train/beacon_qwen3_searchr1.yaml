@@ -1,6 +1,6 @@
 # Search-R1；Qwen3 暂停线性记忆、readout 蒸馏、子文档和窗口切分。
 model_name_or_path: Qwen/Qwen3-4B-Thinking-2507
-distill_teacher_model_name_or_path: Qwen/Qwen3-4B-Thinking-2507
+distill_teacher_model_name_or_path: null  # 默认跟随 student，可覆盖为独立本地 plain checkpoint
 distill_teacher_device: auto
 data_mode: searchr1
 train_data_path: outputs/data/searchr1/qwen3-4b-instruct-sft.jsonl
@@ -41,7 +41,8 @@ beacon:
   beacon_question_memory_v1: false
   beacon_question_max_tokens: 128
   beacon_readout_distill_weight: 0.0
-  beacon_output_distill_weight: 0.0
+  beacon_output_distill_weight: 0.1
+  beacon_output_distill_strategy: all
   beacon_output_distill_temperature: 1.0
   beacon_output_distill_tokens: 8
   beacon_doc_region_split: false

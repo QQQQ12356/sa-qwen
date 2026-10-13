@@ -3,7 +3,7 @@
 Milestone-1 能力探针使用：仅用基础模型 + 标准 ``generate`` 验证 SearchAgent
 （think → <search> → observe → <answer>）检索行为，不涉及 Beacon 压缩。
 
-注意：``Qwen/Qwen3.5-2B`` 是**多模态**架构 ``Qwen3_5ForConditionalGeneration``
+注意：``Qwen/Qwen3.5-4B`` 是**多模态**架构 ``Qwen3_5ForConditionalGeneration``
 （含 vision encoder、linear_attention + full_attention 混合层、mRoPE），
 因此用 :class:`AutoModelForImageTextToText` 加载；纯文本输入时跳过视觉分支。
 
@@ -15,7 +15,8 @@ from __future__ import annotations
 import torch
 
 #: 待加载的基础模型标识。
-QWEN35_2B = "Qwen/Qwen3.5-2B"
+QWEN35_4B = "Qwen/Qwen3.5-4B"
+QWEN35_2B = "Qwen/Qwen3.5-2B"  # 旧调用兼容；默认使用 4B
 
 #: 需要显式关闭的第三方依赖打印（并发 tokenizer 无关）。
 import os
@@ -23,7 +24,7 @@ import os
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
-def load_tokenizer(model_name_or_path: str = QWEN35_2B):
+def load_tokenizer(model_name_or_path: str = QWEN35_4B):
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
@@ -33,7 +34,7 @@ def load_tokenizer(model_name_or_path: str = QWEN35_2B):
 
 
 def load_chat_model(
-    model_name_or_path: str = QWEN35_2B,
+    model_name_or_path: str = QWEN35_4B,
     torch_dtype: torch.dtype = torch.bfloat16,
     device_map: str = "auto",
 ):

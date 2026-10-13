@@ -149,6 +149,7 @@ class SearchR1SFTDataset(Dataset):
         tokenizer: HuggingFace tokenizer（Qwen3.5 系列）。
         loss_segments: 分段损失配置；为 None 或全默认时不生成 ``loss_segment_ids``，
             保持与历史行为一致（逐 token 等权）。
+        return_loss_segment_ids: 默认等权时也生成类别，供分层蒸馏使用。
         doc_region_split: 是否把每个 ``<information>`` 块按子文档切成多个压缩区。
     """
 
@@ -158,13 +159,16 @@ class SearchR1SFTDataset(Dataset):
         tokenizer: PreTrainedTokenizer,
         loss_segments: Optional[LossSegmentConfig] = None,
         doc_region_split: bool = False,
+        return_loss_segment_ids: bool = False,
     ):
         if not os.path.exists(data_path):
             raise FileNotFoundError(f"数据文件不存在: {data_path}\n{SEARCH_R1_DATA_HINT}")
         self.tokenizer = tokenizer
         self.doc_region_split = doc_region_split
         # 全默认权重等价于不加权，此时连分类都不做（省一次带 offset 的分词）
-        self.loss_segments = None if (loss_segments is None or loss_segments.is_default) else loss_segments
+        self.loss_segments = (loss_segments or LossSegmentConfig()) if return_loss_segment_ids else (
+            None if (loss_segments is None or loss_segments.is_default) else loss_segments
+        )
         self.samples: List[Dict[str, Any]] = []
         try:
             with open(data_path, "r", encoding="utf-8") as f:

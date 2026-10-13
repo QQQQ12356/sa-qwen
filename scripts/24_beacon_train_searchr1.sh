@@ -25,7 +25,7 @@ PYTHON_BIN=$(resolve_python)
 CONFIG=${1:-configs/train/beacon_qwen3_searchr1.yaml}
 if [[ $# -gt 0 ]]; then shift; fi
 # 可用环境变量覆盖（未设置则沿用 YAML）；额外 --set 参数优先级最高。
-# MODEL_NAME_OR_PATH: Qwen3 默认模型，或 Qwen/Qwen3.5-2B / 本地 checkpoint。
+# MODEL_NAME_OR_PATH: Qwen3 默认模型，或 Qwen/Qwen3.5-4B / 本地 checkpoint。
 # INFORMATION_MODE: whole=整个 information 一次前向；window=原有分窗。
 # BEACON_POS: append=末尾追加全部 beacon；intersect=每 ratio 个原文 token 插入。
 # INFORMATION_LOSS: true/false，是否计算 information 续写 CE。
@@ -36,6 +36,9 @@ if [[ $# -gt 0 ]]; then shift; fi
 BEACON_OVERRIDES=()
 # SHUFFLE_TRAIN_DATA=true 随机打乱，false 按 JSONL 原始顺序。
 for pair in 'MODEL_NAME_OR_PATH:model_name_or_path' \
+            'DISTILL_TEACHER_MODEL_NAME_OR_PATH:distill_teacher_model_name_or_path' \
+            'OUTPUT_DISTILL_WEIGHT:beacon.beacon_output_distill_weight' \
+            'OUTPUT_DISTILL_STRATEGY:beacon.beacon_output_distill_strategy' \
             'SHUFFLE_TRAIN_DATA:shuffle_train_data' \
             'INFORMATION_MODE:beacon.beacon_information_mode' \
             'BEACON_POS:beacon.beacon_pos' \

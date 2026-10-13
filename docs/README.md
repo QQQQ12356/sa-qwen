@@ -1,5 +1,7 @@
 # Search-R1 Beacon 使用说明
 
+第一阶段已实现完整轨迹冻结 teacher + Beacon 输出 KL（默认全有效 loss token），两种模型的全参数 plain 基线与本地模型接续训练见 [第一阶段说明](stage1_distillation.md)。Qwen3.5 默认模型为 `Qwen/Qwen3.5-4B`。
+
 ## 数据范围
 
 训练仅支持 `data_mode: searchr1`，数据为 Search-R1 `messages` JSONL。Beacon Trainer、原生 Trainer与 plain SFT Trainer 都会校验数据模式；旧 `interactive` 和 `single` 格式不再接受。Beacon SFT 统一使用标准 `search_comp.trainer.beacon_trainer` 入口。
@@ -25,6 +27,8 @@ beacon:
   enable_beacon: true
   beacon_question_memory_v1: false
   beacon_readout_distill_weight: 0.0
+  beacon_output_distill_weight: 0.1
+  beacon_output_distill_strategy: all
   beacon_doc_region_split: false
   beacon_information_mode: whole
   beacon_window_enabled: false
@@ -88,6 +92,7 @@ L = L_main + w_readout * readout + w_output * output_KL
 | `beacon_qwen3_searchr1.yaml` | 默认 Qwen3 整段模式，窗口暂停，LoRA |
 | `beacon_qwen35_whole_searchr1.yaml` | Qwen3.5 整段 information 模式 |
 | `beacon_qwen35_searchr1.yaml` | Qwen3.5 整段模式，取消窗口和子文档切分 |
+| `qwen3_plain_full_sft.yaml` / `qwen35_plain_full_sft.yaml` | 全参数无压缩 Search-R1 基线 |
 | `qwen3_plain_sft.yaml` / `qwen35_plain_sft.yaml` | 两种模型的无压缩 Search-R1 基线 |
 | `native_qwen35.yaml` | 原生 Trainer 的 Search-R1 配置 |
 
@@ -117,7 +122,7 @@ bash scripts/24_beacon_train_searchr1.sh \
 bash scripts/20_plain_train.sh
 ```
 
-24 支持 `MODEL_NAME_OR_PATH`、`INFORMATION_MODE`、`BEACON_POS`、`INFORMATION_LOSS`、`CONTINUATION_WEIGHT`、`DOC_REGION_SPLIT`、`BEACON_RATIO`、`WINDOW_ENABLED`、`BEACON_WINDOW` 和 `BEACON_STRIDE`。未设置时沿用 YAML；额外 `--set` 的优先级最高。22 将全部参数透传给 24。
+24 支持 `DISTILL_TEACHER_MODEL_NAME_OR_PATH`、`OUTPUT_DISTILL_WEIGHT`、`OUTPUT_DISTILL_STRATEGY`、`MODEL_NAME_OR_PATH`、`INFORMATION_MODE`、`BEACON_POS`、`INFORMATION_LOSS`、`CONTINUATION_WEIGHT`、`DOC_REGION_SPLIT`、`BEACON_RATIO`、`WINDOW_ENABLED`、`BEACON_WINDOW` 和 `BEACON_STRIDE`。未设置时沿用 YAML；额外 `--set` 的优先级最高。22 将全部参数透传给 24。
 
 数据仅支持 batch size 1，使用 `grad_accum_steps` 扩大有效 batch。
 

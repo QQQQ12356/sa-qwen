@@ -20,6 +20,7 @@ def _models(tmp_path, position="append"):
     student = _tiny_model(position).train()
     student.beacon_config.beacon_output_distill_weight = 0.1
     student.beacon_config.beacon_output_distill_tokens = 2
+    student.beacon_config.beacon_output_distill_strategy = "prefix"
     teacher = Qwen3_5ForCausalLM(student.config).eval()
     trainer = BeaconDistillationTrainer(
         model=student, distillation_teacher=teacher,
@@ -223,7 +224,7 @@ def test_lora_distillation_preserves_ce_and_inference_checkpoint(tmp_path):
 
 def test_distillation_rejects_raw_document_readouts(tmp_path):
     student, _, _ = _models(tmp_path)
-    with pytest.raises(ValueError, match="已提交"):
+    with pytest.raises(ValueError, match="压缩正文"):
         student(**_batch(), distill_positions=torch.tensor([3]), teacher_logits=torch.zeros(1, 1, 128))
 
 
@@ -235,3 +236,95 @@ def test_distillation_rejects_raw_document_readouts(tmp_path):
 def test_distillation_config_rejects_invalid_values(field, value):
     with pytest.raises(ValueError):
         BeaconConfig(**{field: value})
+
+
+def test_all_positions_cover_pre_search_and_every_unmasked_target():
+    labels = torch.tensor([[-100, 11, 12, -100, -100, -100, 16, 17, 18, 19]])
+    rows = select_distillation_positions(labels, [(3, 5)], strategy="all")
+    assert rows.tolist() == [0, 1, 5, 6, 7, 8]
+    assert select_distillation_positions(labels, [], strategy="all").tolist() == [0, 1, 5, 6, 7, 8]
+    assert select_distillation_positions(torch.full_like(labels, -100), [], strategy="all").numel() == 0
+
+
+def test_stratified_budget_and_disabled_segments():
+    from search_comp.loss_segments import LossSegmentConfig, SEGMENT_IDS
+    labels = torch.arange(30).unsqueeze(0)
+    kinds = torch.full_like(labels, SEGMENT_IDS["think_content"])
+    kinds[:, 20:23] = SEGMENT_IDS["search_content"]
+    kinds[:, 23:] = SEGMENT_IDS["answer_content"]
+    rows = select_distillation_positions(labels, [(2, 5)], 8, "stratified", kinds)
+    assert rows.numel() == 8
+    assert (rows[1:] > rows[:-1]).all()
+    assert {SEGMENT_IDS[n] for n in ("think_content", "search_content", "answer_content")} <= set(kinds[0, rows + 1].tolist())
+    weights = LossSegmentConfig.from_dict({"search_content": False})
+    rows = select_distillation_positions(labels, [(2, 5)], strategy="all",
+                                         loss_segment_ids=kinds, loss_segments=weights)
+    assert not (kinds[0, rows + 1] == SEGMENT_IDS["search_content"]).any()
+
+
+@pytest.mark.parametrize("family", ["qwen3", "qwen35"])
+def test_all_kl_aligns_full_multiturn_trajectory_and_preserves_ce(tmp_path, family):
+    from transformers import Qwen3ForCausalLM
+    from test_qwen3_whole_information import tiny_qwen3, whole_config
+    student = tiny_qwen3() if family == "qwen3" else _tiny_model()
+    cfg = whole_config(student, "append", False)
+    cfg.beacon_output_distill_weight = 0.1
+    cfg.beacon_output_distill_strategy = "all"
+    cfg.beacon_keep_window = 2  # 也验证 keep 段跨窗口时的位置映射
+    student.set_beacon_config(cfg)
+    student.train()
+    teacher_cls = Qwen3ForCausalLM if family == "qwen3" else Qwen3_5ForCausalLM
+    teacher = teacher_cls(student.config)
+    trainer = BeaconDistillationTrainer(model=student, distillation_teacher=teacher,
+        args=TrainingArguments(output_dir=str(tmp_path), use_cpu=True, report_to=[]))
+    ids = torch.arange(10, 30).unsqueeze(0)
+    labels = ids.clone()
+    labels[:, 0] = -100
+    labels[:, 3:8] = -100
+    labels[:, 12:17] = -100
+    batch = dict(input_ids=ids, attention_mask=torch.ones_like(ids), labels=labels,
+                 regions=[(3, 7), (12, 16)])
+    student.beacon_config.beacon_output_distill_weight = 0
+    ce = trainer.compute_loss(student, batch).detach()
+    student.beacon_config.beacon_output_distill_weight = 0.1
+    with patch.object(teacher, "forward", wraps=teacher.forward) as forward, patch.object(
+        student, "_output_distillation_loss", wraps=student._output_distillation_loss,
+    ) as kd:
+        loss = trainer.compute_loss(student, batch)
+        assert forward.call_count == 1
+        kwargs = forward.call_args.kwargs
+        assert torch.equal(kwargs["input_ids"], ids)
+        expected_rows = (labels[0, 1:] != -100).nonzero(as_tuple=True)[0]
+        assert torch.equal(kwargs["logits_to_keep"], expected_rows)
+        assert sum(call.args[0].shape[1] for call in kd.call_args_list) == expected_rows.numel()
+        assert not kwargs["use_cache"]
+    torch.testing.assert_close(student._last_loss_parts["ce_loss"], ce)
+    torch.testing.assert_close(loss.detach(), sum(student._last_loss_parts.values()))
+    loss.backward()
+    assert student.model.beacon_embed_tokens.weight.grad.abs().sum() > 0
+    assert all(not p.requires_grad and p.grad is None for p in teacher.parameters())
+    # 没有检索文档也覆盖全部 CE token；全 mask 样本无需 teacher。
+    with patch.object(teacher, "forward", wraps=teacher.forward) as forward:
+        trainer.compute_loss(student, dict(batch, regions=[]))
+        assert forward.call_count == 1
+        trainer.compute_loss(student, dict(batch, labels=torch.full_like(labels, -100)))
+        assert forward.call_count == 1
+
+
+@pytest.mark.parametrize("family", ["qwen3", "qwen35"])
+def test_local_plain_checkpoint_initializes_student_and_teacher(tmp_path, family):
+    from transformers import Qwen3ForCausalLM
+    from test_qwen3_whole_information import tiny_qwen3
+    from search_comp.models.model_loader import load_beacon_model
+    from search_comp.models.plain_qwen3 import load_sft_model
+    template = tiny_qwen3() if family == "qwen3" else _tiny_model()
+    native_cls = Qwen3ForCausalLM if family == "qwen3" else Qwen3_5ForCausalLM
+    native = native_cls(template.config)
+    native.save_pretrained(tmp_path / "plain")
+    teacher = load_sft_model(tmp_path / "plain", torch_dtype=torch.float32, device_map="cpu")
+    beacon = load_beacon_model(tmp_path / "plain", beacon_config=template.beacon_config,
+                               torch_dtype=torch.float32, device_map="cpu")
+    torch.testing.assert_close(teacher.model.embed_tokens.weight, native.model.embed_tokens.weight)
+    torch.testing.assert_close(beacon.model.embed_tokens.weight, native.model.embed_tokens.weight)
+    assert all(p.requires_grad for p in teacher.parameters())  # plain 路径支持全参数训练
+    assert type(beacon) is type(template)

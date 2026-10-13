@@ -176,6 +176,10 @@ def main_train(
     from ..data.searchr1_dataset import require_searchr1_mode
     require_searchr1_mode(cfg.get("data_mode", "searchr1"))
     require_keys(cfg, ("model_name_or_path", "train_data_path", "output_dir", "exp_name"))
+    if cfg.get("beacon", {}).get("beacon_output_distill_weight", 0) > 0:
+        cfg["distill_teacher_model_name_or_path"] = (
+            cfg.get("distill_teacher_model_name_or_path") or cfg["model_name_or_path"]
+        )
     exp_dir = str(resolve_experiment_dir(cfg))
     prepare_run_artifacts(exp_dir, cfg, config_path, overrides)
 
@@ -251,12 +255,14 @@ def main_train(
     train_ds = SearchR1SFTDataset(
         cfg["train_data_path"], tokenizer, loss_segments=loss_segments,
         doc_region_split=beacon_cfg.beacon_doc_region_split,
+        return_loss_segment_ids=beacon_cfg.beacon_output_distill_strategy == "stratified",
     )
     collator = SearchR1Collator(tokenizer, question_memory_v1=beacon_cfg.beacon_question_memory_v1)
     eval_ds = (
         SearchR1SFTDataset(
             cfg["val_data_path"], tokenizer, loss_segments=loss_segments,
             doc_region_split=beacon_cfg.beacon_doc_region_split,
+            return_loss_segment_ids=beacon_cfg.beacon_output_distill_strategy == "stratified",
         )
         if cfg.get("val_data_path") else None
     )
@@ -321,7 +327,7 @@ def main_train(
     if beacon_cfg.beacon_output_distill_weight > 0:
         from ..milestones.qwen35_text import load_text_causal_model
 
-        teacher_path = cfg.get("distill_teacher_model_name_or_path")
+        teacher_path = cfg.get("distill_teacher_model_name_or_path") or cfg["model_name_or_path"]
         if not teacher_path:
             raise ValueError("输出蒸馏需要配置 distill_teacher_model_name_or_path")
         teacher_device = cfg.get("distill_teacher_device", "auto")

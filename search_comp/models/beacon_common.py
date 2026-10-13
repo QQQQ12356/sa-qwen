@@ -546,11 +546,9 @@ class BeaconCausalLMMixin:
                     raise ValueError("蒸馏读出位置超出有效预测范围")
                 if not (positions[1:] > positions[:-1]).all():
                     raise ValueError("蒸馏读出位置必须严格递增")
-                if not regions or (positions < min(end for _, end in regions)).any():
-                    raise ValueError("蒸馏读出前必须存在已提交的压缩窗口")
                 for start, end in regions:
                     if ((positions >= start) & (positions < end)).any():
-                        raise ValueError("蒸馏只能从提交后的 keep 段读出")
+                        raise ValueError("蒸馏只能从 keep 段读出，不能读取未提交的压缩正文")
                 if (self._mem._labels[:, positions] == -100).any():
                     raise ValueError("蒸馏读出位置必须对应有效监督 token")
                 expected = (input_ids.shape[0], positions.numel(), self.config.vocab_size)
@@ -608,6 +606,10 @@ class BeaconCausalLMMixin:
             readout_term = self.beacon_config.beacon_readout_distill_weight * readout
             loss = loss + readout_term
             parts_by_name["readout_loss"] = readout_term
+        if self._mem._teacher_logits is not None:
+            consumed = sum(count for _, count in self._mem._distill_losses)
+            if consumed != self._mem._distill_positions.numel():
+                raise RuntimeError("teacher/student KL token 数不一致，存在未读出的位置")
         if self._mem._distill_losses:
             kd = sum(value * count for value, count in self._mem._distill_losses)
             kd = kd / sum(count for _, count in self._mem._distill_losses)

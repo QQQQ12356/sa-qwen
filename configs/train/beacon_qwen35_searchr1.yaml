@@ -8,10 +8,10 @@
 # 已有该文件时也可以直接建软链，或命令行覆盖：
 #   --set train_data_path=/abs/path/to/qwen3-4b-instruct-sft.jsonl
 # LoRA 微调：冻结基础模型，只训练低秩适配器 + beacon 参数，降低显存开销。
-model_name_or_path: "Qwen/Qwen3.5-2B"
+model_name_or_path: "Qwen/Qwen3.5-4B"
 # 优先替换为原生 SearchAgent SFT 的完整/已合并 checkpoint；词表必须与 student 一致。
-# 输出蒸馏当前暂停；仅重新开启时加载 teacher，teacher 不写入 student checkpoint。
-distill_teacher_model_name_or_path: "Qwen/Qwen3.5-2B"
+# 冻结 teacher 做一次完整轨迹前向，不写入 student checkpoint。
+distill_teacher_model_name_or_path: null  # 默认跟随 student，可覆盖为独立本地 plain checkpoint
 distill_teacher_device: "auto"  # auto 随模型用 GPU；cpu 节省 GPU 显存但降低速度
 data_mode: "searchr1"
 train_data_path: "outputs/data/searchr1/qwen3-4b-instruct-sft.jsonl"
@@ -38,7 +38,7 @@ eval_steps: 10000
 val_data_path: null
 seed: 42
 shuffle_train_data: true  # false 按 JSONL 原始顺序；true 使用 seed 控制随机采样
-exp_name: "beacon_qwen3_searchr1_v3"
+exp_name: "beacon_qwen35_searchr1"
 output_dir: "outputs"
 # LoRA 配置（use_lora: true 时生效）
 use_lora: true
@@ -68,9 +68,10 @@ beacon:
   beacon_window_enabled: false
   beacon_question_memory_v1: false
   beacon_question_max_tokens: 128
-  beacon_readout_distill_weight: 0.1
-  # 暂停输出 KL 蒸馏，不加载 teacher；保留配置以便后续重新开启。
-  beacon_output_distill_weight: 0.0
+  beacon_readout_distill_weight: 0.0
+  # 所有 CE 有效 token 对齐完整上下文 teacher，KL 独立加在原损失上。
+  beacon_output_distill_weight: 0.1
+  beacon_output_distill_strategy: all
   beacon_output_distill_temperature: 1.0
   beacon_output_distill_tokens: 8
   # 每轮 information 正文作为一个完整压缩区，不按子文档拆分。
