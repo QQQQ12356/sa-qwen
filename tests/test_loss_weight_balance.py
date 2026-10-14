@@ -136,12 +136,22 @@ def test_absent_ce_does_not_dilute_the_continuation_share():
     assert torch.allclose(half, bigger_ce, atol=1e-6), "CE 缺席时 w_ce 不应稀释续写损失"
 
 
-def test_ce_loss_weight_must_be_positive():
-    """w_ce = 0 会让分母归零、CE 彻底消失，必须直接报错。"""
+def test_zero_ce_loss_weight_is_supported():
+    config = BeaconConfig(beacon_ce_loss_weight=0.0)
+    assert BeaconConfig.from_dict(config.to_dict()).beacon_ce_loss_weight == 0.0
+
+
+@pytest.mark.parametrize("weight", [-1.0, float("inf"), float("nan")])
+def test_ce_loss_weight_must_be_finite_and_nonnegative(weight):
     with pytest.raises(ValueError, match="beacon_ce_loss_weight"):
-        BeaconConfig(beacon_ce_loss_weight=0.0)
-    with pytest.raises(ValueError, match="beacon_ce_loss_weight"):
-        BeaconConfig(beacon_ce_loss_weight=-1.0)
+        BeaconConfig(beacon_ce_loss_weight=weight)
+
+
+def test_zero_ce_weight_keeps_only_continuation():
+    _, cont = _ce_and_cont()
+    model = _make_model(w_ce=0.0, w_cont=0.7)
+    torch.testing.assert_close(_loss(model), cont)
+    assert model._last_loss_parts["ce_loss"].item() == 0.0
 
 
 def test_default_ce_loss_weight_is_one():

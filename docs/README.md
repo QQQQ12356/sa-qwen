@@ -83,6 +83,19 @@ L_main = Σ(w_i * CE_i) / Σ(w_i)
 L = L_main + w_readout * readout + w_output * output_KL
 ```
 
+Qwen3 和 Qwen3.5 均支持 `beacon_ce_loss_weight: 0.0`，此时跳过主 CE 计算，日志中的 `ce_loss` 为 0。只训练输出 KD 时，在训练配置的 `beacon` 下设置：
+
+```yaml
+beacon_ce_loss_weight: 0.0
+beacon_continuation_loss_weight: 0.0
+beacon_information_loss: false
+beacon_readout_distill_weight: 0.0
+beacon_output_distill_weight: 1.0
+beacon_output_distill_strategy: all
+```
+
+此时总损失为 `beacon_output_distill_weight * output_KL`，CE 与续写均关闭时不进行份额归一。仍需提供有效 `labels` 来选择 KD 目标位置，不要为了关闭 CE 将它们全部设为 `-100`；没有有效 KD 目标的样本返回可反向的零损失。
+
 ## 环境与配置
 
 依赖见 `requirements.txt`，参考环境为 Python 3.11、Torch 2.7.0+cu126、Transformers 5.9.0、Accelerate 1.14.0。可通过 `PYTHON=/path/to/python` 或 `CONDA_ENV=your-env` 指定环境。

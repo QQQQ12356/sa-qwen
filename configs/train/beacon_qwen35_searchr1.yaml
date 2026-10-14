@@ -82,6 +82,7 @@ beacon:
   # 只开 CE 时改 w_ce 也不改变尺度。例：0.3 / 0.7 → 0.3·ce + 0.7·cont。
   # 当前 1.0 / 0.1 → (ce + 0.1·cont)/1.1；无续写目标时退化为 ce。
   # 两种蒸馏都是独立加项，不进这个分母。
+  # 仅输出 KD：CE、续写、readout 权重设 0，information_loss 设 false，output 权重保持正数。
   beacon_ce_loss_weight: 1.0
   beacon_continuation_loss_weight: 0.1
   beacon_continuation_tokens: 4

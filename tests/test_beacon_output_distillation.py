@@ -312,6 +312,48 @@ def test_all_kl_aligns_full_multiturn_trajectory_and_preserves_ce(tmp_path, fami
 
 
 @pytest.mark.parametrize("family", ["qwen3", "qwen35"])
+@pytest.mark.parametrize("information_mode", ["window", "whole"])
+def test_kd_only_skips_ce_and_backpropagates(tmp_path, family, information_mode):
+    from transformers import Qwen3ForCausalLM
+    from test_qwen3_whole_information import tiny_qwen3
+
+    student = tiny_qwen3() if family == "qwen3" else _tiny_model()
+    config = BeaconConfig.from_dict(dict(
+        student.beacon_config.to_dict(), beacon_ce_loss_weight=0.0,
+        beacon_continuation_loss_weight=0.0, beacon_readout_distill_weight=0.0,
+        beacon_output_distill_weight=0.3, beacon_output_distill_strategy="all",
+        beacon_information_mode=information_mode, beacon_information_loss=False,
+    ))
+    student.set_beacon_config(config)
+    student.train()
+    teacher_cls = Qwen3ForCausalLM if family == "qwen3" else Qwen3_5ForCausalLM
+    teacher = teacher_cls(student.config)
+    trainer = BeaconDistillationTrainer(
+        model=student, distillation_teacher=teacher,
+        args=TrainingArguments(output_dir=str(tmp_path), use_cpu=True, report_to=[]),
+    )
+    with patch.object(student, "_sparse_window_loss", side_effect=AssertionError("CE must be skipped")):
+        loss = trainer.compute_loss(student, _batch())
+    assert torch.isfinite(loss) and loss.item() > 0
+    parts = student._last_loss_parts
+    torch.testing.assert_close(loss.detach(), parts["kd_loss"])
+    assert all(parts[name].item() == 0 for name in ("ce_loss", "cont_loss", "readout_loss"))
+    loss.backward()
+    assert student.model.beacon_embed_tokens.weight.grad.abs().sum() > 0
+    assert all(not p.requires_grad and p.grad is None for p in teacher.parameters())
+
+    # 没有有效 KD 目标时仍返回可反向的零损失，避免归一分母为零。
+    student.zero_grad(set_to_none=True)
+    batch = _batch()
+    batch["labels"] = torch.full_like(batch["labels"], -100)
+    with patch.object(teacher, "forward", wraps=teacher.forward) as forward:
+        empty_loss = trainer.compute_loss(student, batch)
+        assert forward.call_count == 0
+    assert empty_loss.item() == 0
+    empty_loss.backward()
+
+
+@pytest.mark.parametrize("family", ["qwen3", "qwen35"])
 def test_local_plain_checkpoint_initializes_student_and_teacher(tmp_path, family):
     from transformers import Qwen3ForCausalLM
     from test_qwen3_whole_information import tiny_qwen3

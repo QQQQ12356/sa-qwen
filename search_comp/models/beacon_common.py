@@ -408,7 +408,7 @@ class BeaconCausalLMMixin:
                     kd_loss = self._output_distillation_loss(kd_hidden, kd_teacher)
                     self._mem._distill_losses.append((kd_loss, kd_hidden.shape[1]))
             valid_num = (win_labels != -100).sum(-1)
-            if valid_num.sum().item() > 0:
+            if self.beacon_config.beacon_ce_loss_weight > 0 and valid_num.sum().item() > 0:
                 batch_loss, weight_sum = self._sparse_window_loss(
                     hidden, win_labels, valid_num, self._mem._step_weights
                 )
@@ -577,29 +577,23 @@ class BeaconCausalLMMixin:
         # 权重是「该项在总损失里的份额」：按本次**实际出现**的项的权重和归一。``ce_loss``
         # 为 None（本批 labels 全 -100，没有任何 CE 监督）时它不占份额，否则续写梯度会被
         # w_ce 白白稀释。于是只有 CE 时 L = ce（改 w_ce 不动尺度），两项都在时才按比例加权。
-        # readout 是独立的蒸馏加项，不进分母。
+        # 权重为 0 的项不参与归一；readout / KD 是独立的蒸馏加项，不进分母。
         weighted = []
-        if ce_loss is not None:
+        if ce_loss is not None and self.beacon_config.beacon_ce_loss_weight > 0:
             weighted.append(("ce_loss", self.beacon_config.beacon_ce_loss_weight, ce_loss))
-        if continuation is not None:
+        if continuation is not None and self.beacon_config.beacon_continuation_loss_weight > 0:
             weighted.append(
                 ("cont_loss", self.beacon_config.beacon_continuation_loss_weight, continuation)
             )
         if weighted:
             denominator = sum(weight for _, weight, _ in weighted)
-            if denominator <= 0:
-                raise ValueError(
-                    "主 CE 与续写损失的权重和必须为正，当前 beacon_ce_loss_weight="
-                    f"{self.beacon_config.beacon_ce_loss_weight}、beacon_continuation_loss_weight="
-                    f"{self.beacon_config.beacon_continuation_loss_weight}"
-                )
             loss = sum(weight * value for _, weight, value in weighted) / denominator
             # 逐项留痕：分量之和恒等于总损失，每个分量都能被日志读出。
             parts_by_name = {
                 name: (weight / denominator) * value for name, weight, value in weighted
             }
         else:
-            # 本次既无 CE 也无续写监督：给一个保持计算图的零。
+            # 本次 CE 与续写均缺席或关闭：给一个保持计算图的零，再加入蒸馏损失。
             loss = self.model.beacon_embed_tokens.weight.sum() * 0.0
             parts_by_name = {}
         if readout is not None:
@@ -776,4 +770,3 @@ class BeaconCausalLMMixin:
         if not generated:
             return torch.empty((1, 0), dtype=torch.long, device=input_ids.device)
         return torch.cat(generated, dim=1)
-

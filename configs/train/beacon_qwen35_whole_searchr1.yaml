@@ -46,6 +46,7 @@ beacon:
   beacon_output_distill_temperature: 1.0
   beacon_output_distill_tokens: 8
   beacon_doc_region_split: false
+  # 仅输出 KD：CE、续写、readout 权重设 0，information_loss 设 false，output 权重保持正数。
   beacon_ce_loss_weight: 1.0
   beacon_continuation_loss_weight: 0.1
   beacon_continuation_tokens: 4

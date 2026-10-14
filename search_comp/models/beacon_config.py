@@ -72,7 +72,8 @@ class BeaconConfig:
     #: 主 CE 的权重。与 ``beacon_continuation_loss_weight`` 一起按**份额**归一：
     #: ``L = (w_ce·ce + w_cont·cont) / (w_ce + w_cont)``，分母只统计本次前向实际出现的项。
     #: 因此只有 CE 时 ``L = ce``（改 w_ce 不动尺度），两项都在时才按比例加权；
-    #: ``beacon_readout_distill_weight`` 是独立加项，不进这个分母。必须为正。
+    #: 权重为 0 时跳过主 CE；CE 与续写均关闭时仅使用独立的蒸馏加项。
+    #: ``beacon_readout_distill_weight`` / ``beacon_output_distill_weight`` 不进这个分母。
     beacon_ce_loss_weight: float = 1.0
     #: 续写损失的权重份额。0 表示关闭（默认，逐位等价于历史行为）；开启后与
     #: ``beacon_ce_loss_weight`` 按上式归一，不再是绝对加项。
@@ -138,10 +139,8 @@ class BeaconConfig:
             raise ValueError("beacon_question_max_tokens 必须为正数")
         if not 0 <= self.beacon_readout_distill_weight < float("inf"):
             raise ValueError("beacon_readout_distill_weight 必须为有限非负数")
-        if not 0 < self.beacon_ce_loss_weight < float("inf"):
-            raise ValueError(
-                "beacon_ce_loss_weight 必须为有限正数（=0 会让主 CE 在主损失里彻底消失）"
-            )
+        if not 0 <= self.beacon_ce_loss_weight < float("inf"):
+            raise ValueError("beacon_ce_loss_weight 必须为有限非负数")
         if not 0 <= self.beacon_continuation_loss_weight < float("inf"):
             raise ValueError("beacon_continuation_loss_weight 必须为有限非负数")
         if self.beacon_continuation_tokens <= 0:
