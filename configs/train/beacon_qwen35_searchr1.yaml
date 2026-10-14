@@ -76,11 +76,11 @@ beacon:
   beacon_output_distill_tokens: 8
   # 每轮 information 正文作为一个完整压缩区，不按子文档拆分。
   beacon_doc_region_split: false
-  # 主 CE 与续写损失按**份额**归一（不再是绝对乘子）：
+  # 主 CE 与续写损失同时参与时按份额归一：
   #   L = (w_ce·ce + w_cont·cont) / (w_ce + w_cont)
-  # 分母只统计本次前向实际出现的项，所以没有压缩段的样本自动退化回 L = ce，
-  # 只开 CE 时改 w_ce 也不改变尺度。例：0.3 / 0.7 → 0.3·ce + 0.7·cont。
-  # 当前 1.0 / 0.1 → (ce + 0.1·cont)/1.1；无续写目标时退化为 ce。
+  # 只有一项实际参与时直接乘其权重，例如 CE=0.1、续写=0 → 0.1·ce。
+  # 两项同时参与时：0.3 / 0.7 → 0.3·ce + 0.7·cont。
+  # 当前 1.0 / 0.1 → (ce + 0.1·cont)/1.1；无续写目标时为 1.0·ce。
   # 两种蒸馏都是独立加项，不进这个分母。
   # 仅输出 KD：CE、续写、readout 权重设 0，information_loss 设 false，output 权重保持正数。
   beacon_ce_loss_weight: 1.0

@@ -76,12 +76,16 @@ whole 的续写项使用 information 内的因果 next-token CE：每个原文 t
 
 append 布局的 beacon 全在正文之后，因此原文内部 CE 不直接训练这些 beacon；提交后的 assistant 损失和可选输出 KL 蒸馏负责向 beacon 压缩参数传递梯度。分段损失继续控制 assistant 的 thinking/search/answer 监督。
 
-主 CE 与续写 CE 按实际出现的项进行份额归一，线性 readout / 输出 KL 是独立加项：
+主 CE 与续写 CE 两项实际参与且权重均大于 0 时按份额归一；只有一项参与时直接乘其权重。线性 readout / 输出 KL 是独立加项：
 
 ```text
-L_main = Σ(w_i * CE_i) / Σ(w_i)
+L_main = (w_ce * CE + w_cont * cont) / (w_ce + w_cont)  # 两项参与
+L_main = w_i * CE_i                                  # 仅一项参与
+L_main = 0                                          # 两项均关闭或缺席
 L = L_main + w_readout * readout + w_output * output_KL
 ```
+
+例如 `beacon_ce_loss_weight: 0.1`、`beacon_continuation_loss_weight: 0.0` 时，总损失为 `0.1 * CE + w_readout * readout + w_output * output_KL`。
 
 Qwen3 和 Qwen3.5 均支持 `beacon_ce_loss_weight: 0.0`，此时跳过主 CE 计算，日志中的 `ce_loss` 为 0。只训练输出 KD 时，在训练配置的 `beacon` 下设置：
 

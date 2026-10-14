@@ -1,11 +1,11 @@
 """主 CE 与续写损失的权重平衡。
 
-权重是「该项在总损失里的份额」，分母只统计**本次前向实际出现**的项：
+两项均实际参与时按权重和归一：
 
     L = (w_ce·ce + w_cont·cont) / (w_ce + w_cont)   [+ w_readout·readout]
 
-因此：只出现 CE 时 ``L = ce``（与历史行为逐位一致，换 w_ce 不动尺度）；两项都出现时按
-份额加权平均，同比例缩放两个权重不改变 L。``readout`` 是独立的蒸馏加项，不进分母。
+只有一项实际参与时直接乘其权重；两项都出现时按份额加权平均，
+同比例缩放两个权重不改变 L。``readout`` 是独立的蒸馏加项，不进分母。
 
 各断言里的 ``ce`` / ``cont`` 都由「关掉另一半」的参考前向反解出来，不复用实现内部的值。
 """
@@ -56,11 +56,11 @@ def _ce_and_cont(question=None, **kwargs):
     return ce, 2.0 * half - ce
 
 
-def test_only_ce_keeps_the_loss_scale():
-    """向后兼容钉子（旧实现同样通过）：续写关闭时 L 恒等于 ce，换 w_ce 不动尺度。"""
+def test_only_ce_uses_its_weight_directly():
+    """续写关闭时 L = w_ce·ce，包括用户使用的 0.1 / 0 配置。"""
     reference = _loss(_make_model(w_ce=1.0, w_cont=0.0))
-    for w_ce in (0.3, 1.0, 7.5):
-        assert torch.allclose(_loss(_make_model(w_ce=w_ce, w_cont=0.0)), reference, atol=1e-6)
+    for w_ce in (0.1, 0.3, 1.0, 7.5):
+        assert torch.allclose(_loss(_make_model(w_ce=w_ce, w_cont=0.0)), w_ce * reference, atol=1e-6)
 
 
 def test_weight_ratio_is_scale_invariant():
@@ -94,12 +94,12 @@ def test_unnormalized_weights_still_get_normalized():
     )
 
 
-def test_missing_continuation_falls_back_to_ce():
-    """向后兼容钉子（旧实现同样通过）：没有压缩段就没有续写项，L = ce，不被权重稀释。"""
+def test_missing_continuation_uses_ce_weight_directly():
+    """没有压缩段就没有续写项，L = w_ce·ce。"""
     reference = _loss(_make_model(w_ce=1.0, w_cont=0.0), regions=[])
     for w_ce, w_cont in ((1.0, 0.0), (0.3, 0.7), (0.5, 0.5)):
         actual = _loss(_make_model(w_ce=w_ce, w_cont=w_cont), regions=[])
-        assert torch.allclose(actual, reference, atol=1e-6)
+        assert torch.allclose(actual, w_ce * reference, atol=1e-6)
 
 
 def test_readout_term_stays_out_of_the_denominator():
@@ -121,8 +121,8 @@ def test_readout_term_stays_out_of_the_denominator():
     assert torch.allclose(mixed, (0.5 * ce + 0.5 * cont) + 2.0 * readout, atol=1e-6)
 
 
-def test_absent_ce_does_not_dilute_the_continuation_share():
-    """labels 全 -100 → 本批没有任何 CE 监督，续写项应拿满份额，而不是被 w_ce 稀释。
+def test_absent_ce_uses_continuation_weight_directly():
+    """labels 全 -100 → 只有续写监督，L = w_cont·cont，不受 w_ce 影响。
 
     （分量之和 == 总损失由 ``test_loss_component_logging`` 覆盖，不在此重复。）
     """
@@ -132,7 +132,7 @@ def test_absent_ce_does_not_dilute_the_continuation_share():
     bigger_ce = _loss(_make_model(w_ce=10.0, w_cont=0.5), labels=all_masked)
 
     assert half.item() > 0
-    assert torch.allclose(half, full, atol=1e-6), "CE 缺席时续写项的权重值不应影响结果"
+    assert torch.allclose(half, 0.5 * full, atol=1e-6)
     assert torch.allclose(half, bigger_ce, atol=1e-6), "CE 缺席时 w_ce 不应稀释续写损失"
 
 
@@ -150,7 +150,7 @@ def test_ce_loss_weight_must_be_finite_and_nonnegative(weight):
 def test_zero_ce_weight_keeps_only_continuation():
     _, cont = _ce_and_cont()
     model = _make_model(w_ce=0.0, w_cont=0.7)
-    torch.testing.assert_close(_loss(model), cont)
+    torch.testing.assert_close(_loss(model), 0.7 * cont)
     assert model._last_loss_parts["ce_loss"].item() == 0.0
 
 

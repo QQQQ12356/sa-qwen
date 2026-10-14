@@ -574,10 +574,8 @@ class BeaconCausalLMMixin:
             continuation = torch.stack(self._mem._cont_losses).mean()
             self._mem._cont_losses = []
 
-        # 权重是「该项在总损失里的份额」：按本次**实际出现**的项的权重和归一。``ce_loss``
-        # 为 None（本批 labels 全 -100，没有任何 CE 监督）时它不占份额，否则续写梯度会被
-        # w_ce 白白稀释。于是只有 CE 时 L = ce（改 w_ce 不动尺度），两项都在时才按比例加权。
-        # 权重为 0 的项不参与归一；readout / KD 是独立的蒸馏加项，不进分母。
+        # CE 与续写两项实际参与时按权重和归一；只有一项时直接乘其权重。
+        # 缺席或权重为 0 的项不参与；readout / KD 是独立加项，不进分母。
         weighted = []
         if ce_loss is not None and self.beacon_config.beacon_ce_loss_weight > 0:
             weighted.append(("ce_loss", self.beacon_config.beacon_ce_loss_weight, ce_loss))
@@ -586,7 +584,7 @@ class BeaconCausalLMMixin:
                 ("cont_loss", self.beacon_config.beacon_continuation_loss_weight, continuation)
             )
         if weighted:
-            denominator = sum(weight for _, weight, _ in weighted)
+            denominator = sum(weight for _, weight, _ in weighted) if len(weighted) > 1 else 1.0
             loss = sum(weight * value for _, weight, value in weighted) / denominator
             # 逐项留痕：分量之和恒等于总损失，每个分量都能被日志读出。
             parts_by_name = {

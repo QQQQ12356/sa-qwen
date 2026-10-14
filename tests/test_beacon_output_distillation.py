@@ -263,7 +263,8 @@ def test_stratified_budget_and_disabled_segments():
 
 
 @pytest.mark.parametrize("family", ["qwen3", "qwen35"])
-def test_all_kl_aligns_full_multiturn_trajectory_and_preserves_ce(tmp_path, family):
+@pytest.mark.parametrize("ce_weight", [1.0, 0.1])
+def test_all_kl_aligns_full_multiturn_trajectory_and_preserves_ce(tmp_path, family, ce_weight):
     from transformers import Qwen3ForCausalLM
     from test_qwen3_whole_information import tiny_qwen3, whole_config
     student = tiny_qwen3() if family == "qwen3" else _tiny_model()
@@ -286,6 +287,7 @@ def test_all_kl_aligns_full_multiturn_trajectory_and_preserves_ce(tmp_path, fami
                  regions=[(3, 7), (12, 16)])
     student.beacon_config.beacon_output_distill_weight = 0
     ce = trainer.compute_loss(student, batch).detach()
+    student.beacon_config.beacon_ce_loss_weight = ce_weight
     student.beacon_config.beacon_output_distill_weight = 0.1
     with patch.object(teacher, "forward", wraps=teacher.forward) as forward, patch.object(
         student, "_output_distillation_loss", wraps=student._output_distillation_loss,
@@ -298,7 +300,7 @@ def test_all_kl_aligns_full_multiturn_trajectory_and_preserves_ce(tmp_path, fami
         assert torch.equal(kwargs["logits_to_keep"], expected_rows)
         assert sum(call.args[0].shape[1] for call in kd.call_args_list) == expected_rows.numel()
         assert not kwargs["use_cache"]
-    torch.testing.assert_close(student._last_loss_parts["ce_loss"], ce)
+    torch.testing.assert_close(student._last_loss_parts["ce_loss"], ce_weight * ce)
     torch.testing.assert_close(loss.detach(), sum(student._last_loss_parts.values()))
     loss.backward()
     assert student.model.beacon_embed_tokens.weight.grad.abs().sum() > 0

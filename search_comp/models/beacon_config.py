@@ -69,14 +69,14 @@ class BeaconConfig:
     beacon_information_mode: str = "window"
     #: None 沿用续写权重开关；False 禁用；True 启用（需正的续写权重）。
     beacon_information_loss: Optional[bool] = None
-    #: 主 CE 的权重。与 ``beacon_continuation_loss_weight`` 一起按**份额**归一：
-    #: ``L = (w_ce·ce + w_cont·cont) / (w_ce + w_cont)``，分母只统计本次前向实际出现的项。
-    #: 因此只有 CE 时 ``L = ce``（改 w_ce 不动尺度），两项都在时才按比例加权；
+    #: 主 CE 的权重。与续写损失同时参与时按份额归一：
+    #: ``L = (w_ce·ce + w_cont·cont) / (w_ce + w_cont)``。
+    #: 只有一项实际参与时直接乘其权重，例如只有 CE 时 ``L = w_ce·ce``。
     #: 权重为 0 时跳过主 CE；CE 与续写均关闭时仅使用独立的蒸馏加项。
     #: ``beacon_readout_distill_weight`` / ``beacon_output_distill_weight`` 不进这个分母。
     beacon_ce_loss_weight: float = 1.0
-    #: 续写损失的权重份额。0 表示关闭（默认，逐位等价于历史行为）；开启后与
-    #: ``beacon_ce_loss_weight`` 按上式归一，不再是绝对加项。
+    #: 续写损失的权重。0 表示关闭；与 CE 同时参与时按上式归一，
+    #: 只有续写时 ``L = w_cont·cont``。
     beacon_continuation_loss_weight: float = 0.0
     #: 每个读出点预测的目标 token 数 k（两种模式都生效）。window 模式 = 每窗窗头前 k 个
     #: token，由窗头第 0..k-1 行分别预测；beacon 模式 = 每 chunk 的 beacon 预测其后 k 个
