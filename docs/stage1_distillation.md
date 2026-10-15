@@ -60,7 +60,7 @@ bash scripts/24_beacon_train_searchr1.sh configs/train/beacon_qwen3_searchr1.yam
 
 `all` 相比采样会增加保存的 `[1, N_loss, vocab_size]` teacher logits 和计算开销。Student LM head 的 KL 仍分块并支持反向重算；这不等于 teacher logits 也被分块卸载。`distill_teacher_device=cpu` 可减少 teacher 参数占用的 GPU 显存，但已选 logits 仍需送往 student。全参数 plain 与全覆盖 KL 在本机是否能容纳长轨迹尚未实测，不能保证单卡显存足够。
 
-第二阶段的文档移除/依赖加权以及片段重建没有实现。
+第二阶段文档移除/依赖加权已实现，默认关闭，配置与完整流程见 [第二阶段说明](stage2_distillation.md)。片段重建没有实现。
 
 ## 验证记录
 

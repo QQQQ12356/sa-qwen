@@ -43,6 +43,8 @@ beacon:
   beacon_readout_distill_weight: 0.0
   beacon_output_distill_weight: 0.1
   beacon_output_distill_strategy: all
+  beacon_output_distill_doc_weighting: false  # true 启用第二阶段文档依赖 JS 加权
+  beacon_output_distill_doc_epsilon: 0.1
   beacon_output_distill_temperature: 1.0
   beacon_output_distill_tokens: 8
   beacon_doc_region_split: false

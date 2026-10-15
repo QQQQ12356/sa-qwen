@@ -72,6 +72,8 @@ beacon:
   # 所有 CE 有效 token 对齐完整上下文 teacher，KL 独立加在原损失上。
   beacon_output_distill_weight: 0.1
   beacon_output_distill_strategy: all
+  beacon_output_distill_doc_weighting: false  # true 启用第二阶段文档依赖 JS 加权
+  beacon_output_distill_doc_epsilon: 0.1
   beacon_output_distill_temperature: 1.0
   beacon_output_distill_tokens: 8
   # 每轮 information 正文作为一个完整压缩区，不按子文档拆分。

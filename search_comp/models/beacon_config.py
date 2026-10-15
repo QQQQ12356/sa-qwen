@@ -62,6 +62,9 @@ class BeaconConfig:
     beacon_output_distill_strategy: str = "all"
     #: 仅 prefix / stratified 使用，每个压缩后 keep 段的采样预算。
     beacon_output_distill_tokens: int = 8
+    #: 第二阶段：最近一次已提交文档的删除对照 JS 加权；默认关闭。
+    beacon_output_distill_doc_weighting: bool = False
+    beacon_output_distill_doc_epsilon: float = 0.1
     #: 把 ``<information>`` 块按子文档切成多个压缩区（每篇文档独立一个窗口序列）。
     #: 开启后「同一压缩段的非首窗」等价于「同一篇文档的续写窗」，供续写损失使用。
     beacon_doc_region_split: bool = False
@@ -133,6 +136,10 @@ class BeaconConfig:
             raise ValueError("beacon_output_distill_temperature 必须为有限正数")
         if self.beacon_output_distill_strategy not in {"all", "prefix", "stratified"}:
             raise ValueError("beacon_output_distill_strategy 必须为 all、prefix 或 stratified")
+        if not isinstance(self.beacon_output_distill_doc_weighting, bool):
+            raise ValueError("beacon_output_distill_doc_weighting 必须为 bool")
+        if not 0 < self.beacon_output_distill_doc_epsilon < float("inf"):
+            raise ValueError("beacon_output_distill_doc_epsilon 必须为有限正数")
         if self.beacon_output_distill_tokens <= 0:
             raise ValueError("beacon_output_distill_tokens 必须为正数")
         if self.beacon_question_max_tokens <= 0:

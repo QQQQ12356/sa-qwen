@@ -6,6 +6,6 @@ Qwen3 默认将每轮 information 整段插入 beacon 后一次前向，仅提�
 
 已实现第一阶段完整轨迹 teacher 输出 KL，默认监督所有有效 assistant loss token；新增 plain 全参数配置，Beacon 可从本地 plain checkpoint 初始化。
 
-文档：[第一阶段训练与对照实验](docs/stage1_distillation.md) · [使用说明](docs/README.md) · [实现与验证](docs/implementation.md)。
+文档：[第二阶段文档依赖加权](docs/stage2_distillation.md) · [第一阶段训练与对照实验](docs/stage1_distillation.md) · [使用说明](docs/README.md) · [实现与验证](docs/implementation.md)。
 
 未启动训练，未修改参考项目或其他项目目录。

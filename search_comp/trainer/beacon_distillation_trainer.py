@@ -1,6 +1,9 @@
 """对齐同一轨迹的有效生成位置，冻结教师保留完整原文。"""
 
+import math
+
 import torch
+import torch.nn.functional as F
 
 from .loss_component_trainer import LossComponentTrainer
 
@@ -62,6 +65,46 @@ def select_distillation_positions(labels, regions, tokens=8, strategy="prefix",
     return torch.cat(selected) if selected else labels.new_empty(0)
 
 
+@torch.no_grad()
+def document_dependency_weights(teacher, input_ids, attention_mask, positions,
+                                regions, teacher_logits, config):
+    """最近已提交文档的删除对照；保留标签/真实输出，只删 region 正文。
+
+    positions 是原轨迹的预测行；删 [start,end) 后映射为 positions-(end-start)。
+    每个有效 region 最多一次 teacher forward，JS 按 LM-head chunk 计算。
+    """
+    device = teacher_logits.device
+    positions = positions.to(device)
+    input_ids = input_ids.to(device)
+    attention_mask = attention_mask.to(device) if attention_mask is not None else None
+    epsilon = config.beacon_output_distill_doc_epsilon
+    weights = teacher_logits.new_full(teacher_logits.shape[:2], epsilon, dtype=torch.float32)
+    temperature = config.beacon_output_distill_temperature
+    chunk_size = config.beacon_loss_chunk_size
+    for index, (start, end) in enumerate(regions):
+        stop = regions[index + 1][0] if index + 1 < len(regions) else input_ids.shape[1]
+        selected = ((positions >= end) & (positions < stop)).nonzero(as_tuple=True)[0]
+        if end <= start or not selected.numel():
+            continue
+        keep = torch.cat((torch.arange(start, device=device),
+                          torch.arange(end, input_ids.shape[1], device=device)))
+        removed_logits = teacher(
+            input_ids=input_ids[:, keep],
+            attention_mask=attention_mask[:, keep] if attention_mask is not None else None,
+            logits_to_keep=positions[selected] - (end - start), use_cache=False,
+        ).logits
+        for offset in range(0, selected.numel(), chunk_size):
+            rows = selected[offset:offset + chunk_size]
+            plus = F.log_softmax(teacher_logits[:, rows].float() / temperature, dim=-1)
+            minus = F.log_softmax(removed_logits[:, offset:offset + chunk_size].float() / temperature, dim=-1)
+            mixture = torch.logaddexp(plus, minus) - math.log(2)
+            js = 0.5 * ((plus.exp() * (plus - mixture)).sum(-1)
+                        + (minus.exp() * (minus - mixture)).sum(-1))
+            weights[:, rows] = epsilon + (js / math.log(2)).clamp(0, 1)
+        del removed_logits
+    return weights.detach()
+
+
 class BeaconDistillationTrainer(LossComponentTrainer):
     """训练用独立教师；教师不注册到 student，不进入优化器或 checkpoint。"""
 
@@ -98,6 +141,11 @@ class BeaconDistillationTrainer(LossComponentTrainer):
                         logits_to_keep=positions.to(device),
                         use_cache=False,
                     ).logits
+                if config.beacon_output_distill_doc_weighting:
+                    inputs["distill_weights"] = document_dependency_weights(
+                        teacher, inputs["input_ids"], attention_mask, positions,
+                        inputs["regions"], targets, config,
+                    ).to(inputs["input_ids"].device)
                 inputs["teacher_logits"] = targets.detach().to(inputs["input_ids"].device)
         return super().compute_loss(
             model, inputs, return_outputs=return_outputs, num_items_in_batch=num_items_in_batch,

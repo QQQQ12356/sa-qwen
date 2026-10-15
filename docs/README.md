@@ -2,6 +2,8 @@
 
 第一阶段已实现完整轨迹冻结 teacher + Beacon 输出 KL（默认全有效 loss token），两种模型的全参数 plain 基线与本地模型接续训练见 [第一阶段说明](stage1_distillation.md)。Qwen3.5 默认模型为 `Qwen/Qwen3.5-4B`。
 
+第二阶段文档依赖加权已实现，默认关闭：`beacon.beacon_output_distill_doc_weighting=true` 开启，计算公式、逐轮文档删除规则和额外开销见 [第二阶段说明](stage2_distillation.md)。
+
 ## 数据范围
 
 训练仅支持 `data_mode: searchr1`，数据为 Search-R1 `messages` JSONL。Beacon Trainer、原生 Trainer与 plain SFT Trainer 都会校验数据模式；旧 `interactive` 和 `single` 格式不再接受。Beacon SFT 统一使用标准 `search_comp.trainer.beacon_trainer` 入口。

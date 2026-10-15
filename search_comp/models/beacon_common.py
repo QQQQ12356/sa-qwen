@@ -38,6 +38,7 @@ class BeaconMemory:
         self._readout_losses = []
         self._distill_positions = None
         self._teacher_logits = None
+        self._distill_weights = None
         self._distill_losses = []
         # 续写监督：全局移位的 token id、当前窗口的读出位置与监督标签、跨窗口损失累积
         self._cont_losses: List[torch.Tensor] = []
@@ -331,7 +332,7 @@ class BeaconCausalLMMixin:
     def forward(self, input_ids=None, attention_mask=None, labels=None,
                 compress_regions=None, compress_start=None, compress_end=None,
                 regions=None, question_input_ids=None, loss_segment_ids=None,
-                distill_positions=None, teacher_logits=None, **kwargs):
+                distill_positions=None, teacher_logits=None, distill_weights=None, **kwargs):
         if not self.beacon_config.enable_beacon:
             return super().forward(input_ids=input_ids, attention_mask=attention_mask, labels=labels, **kwargs)
         if compress_regions is None and compress_start is not None and compress_end is not None:
@@ -354,12 +355,12 @@ class BeaconCausalLMMixin:
             with torch.autograd.graph.save_on_cpu(pin_memory=input_ids.is_cuda):
                 loss, logits = self._beacon_forward(
                     input_ids, labels, compress_regions, question_input_ids, loss_segment_ids,
-                    distill_positions, teacher_logits,
+                    distill_positions, teacher_logits, distill_weights,
                 )
         else:
             loss, logits = self._beacon_forward(
                 input_ids, labels, compress_regions, question_input_ids, loss_segment_ids,
-                distill_positions, teacher_logits,
+                distill_positions, teacher_logits, distill_weights,
             )
         # 返回 ModelOutput，兼容 transformers.Trainer（取 outputs["loss"]）
         return CausalLMOutputWithPast(loss=loss, logits=logits)
@@ -405,8 +406,11 @@ class BeaconCausalLMMixin:
                 if selected.any():
                     kd_hidden = hidden[:, positions[selected] - start]
                     kd_teacher = self._mem._teacher_logits[:, selected]
-                    kd_loss = self._output_distillation_loss(kd_hidden, kd_teacher)
-                    self._mem._distill_losses.append((kd_loss, kd_hidden.shape[1]))
+                    weights = self._mem._distill_weights
+                    weights = weights[:, selected] if weights is not None else None
+                    kd_loss = self._output_distillation_loss(kd_hidden, kd_teacher, weights)
+                    mass = weights.sum() if weights is not None else kd_hidden.shape[1]
+                    self._mem._distill_losses.append((kd_loss, kd_hidden.shape[1], mass))
             valid_num = (win_labels != -100).sum(-1)
             if self.beacon_config.beacon_ce_loss_weight > 0 and valid_num.sum().item() > 0:
                 batch_loss, weight_sum = self._sparse_window_loss(
@@ -430,30 +434,36 @@ class BeaconCausalLMMixin:
             logits = self.lm_head(hidden).float()
         return new_past, logits
 
-    def _output_distillation_loss(self, hidden, teacher_logits):
-        """KL(teacher || student)，按读出 token 平均、按 LM-head chunk 重计算。"""
+    def _output_distillation_loss(self, hidden, teacher_logits, weights=None):
+        """KL(teacher || student)，可选按权重和归一，按 LM-head chunk 重计算。"""
         temperature = self.beacon_config.beacon_output_distill_temperature
         chunk_size = self.beacon_config.beacon_loss_chunk_size
 
-        def chunk_loss(current_hidden, targets):
+        def chunk_loss(current_hidden, targets, current_weights):
             student_log_probs = F.log_softmax(self.lm_head(current_hidden).float() / temperature, dim=-1)
             teacher_log_probs = F.log_softmax(targets.float() / temperature, dim=-1)
-            return F.kl_div(
-                student_log_probs, teacher_log_probs, log_target=True, reduction="sum",
-            ) * temperature ** 2
+            if current_weights is None:
+                value = F.kl_div(student_log_probs, teacher_log_probs, log_target=True, reduction="sum")
+            else:
+                per_token = F.kl_div(student_log_probs, teacher_log_probs, log_target=True,
+                                     reduction="none").sum(-1)
+                value = (per_token * current_weights).sum()
+            return value * temperature ** 2
 
+        weights = weights.detach().to(hidden.device, dtype=torch.float32) if weights is not None else None
         total = hidden.new_zeros((), dtype=torch.float32)
         for start in range(0, hidden.shape[1], chunk_size):
             current_hidden = hidden[:, start:start + chunk_size]
             targets = teacher_logits[:, start:start + chunk_size].detach()
+            current_weights = weights[:, start:start + chunk_size] if weights is not None else None
             if self.beacon_config.beacon_checkpoint_loss and self.training and current_hidden.requires_grad:
                 value = torch.utils.checkpoint.checkpoint(
-                    chunk_loss, current_hidden, targets, use_reentrant=False,
+                    chunk_loss, current_hidden, targets, current_weights, use_reentrant=False,
                 )
             else:
-                value = chunk_loss(current_hidden, targets)
+                value = chunk_loss(current_hidden, targets, current_weights)
             total = total + value
-        return total / (hidden.shape[0] * hidden.shape[1])
+        return total / (weights.sum() if weights is not None else hidden.shape[0] * hidden.shape[1])
 
     def _sparse_window_loss(self, hidden, labels, valid_num, weights=None):
         """只为非 ``-100`` 位置计算分块词表交叉熵（可选按片段类别加权）。
@@ -531,7 +541,7 @@ class BeaconCausalLMMixin:
         self._mem._question = self.model.embed_tokens(question_input_ids.to(self.model.embed_tokens.weight.device))
 
     def _beacon_forward(self, input_ids, labels, regions, question_input_ids=None,
-                        loss_segment_ids=None, distill_positions=None, teacher_logits=None):
+                        loss_segment_ids=None, distill_positions=None, teacher_logits=None, distill_weights=None):
         self._mem = self.memory_class(self, self.beacon_config)
         self._prepare_question(question_input_ids)
         self._mem.prepare(input_ids, labels, regions, loss_segment_ids)
@@ -554,6 +564,14 @@ class BeaconCausalLMMixin:
                 expected = (input_ids.shape[0], positions.numel(), self.config.vocab_size)
                 if teacher_logits is None or tuple(teacher_logits.shape) != expected:
                     raise ValueError(f"teacher_logits 形状必须为 {expected}")
+                if distill_weights is not None:
+                    if tuple(distill_weights.shape) != expected[:2]:
+                        raise ValueError(f"distill_weights 形状必须为 {expected[:2]}")
+                    if not torch.isfinite(distill_weights).all() or (distill_weights <= 0).any():
+                        raise ValueError("distill_weights 必须为有限正数")
+                    self._mem._distill_weights = distill_weights.detach().to(input_ids.device)
+                elif self.beacon_config.beacon_output_distill_doc_weighting:
+                    raise ValueError("文档依赖加权需要 Trainer 提供 distill_weights")
                 self._mem._distill_positions = positions
                 self._mem._teacher_logits = teacher_logits.detach().to(input_ids.device)
 
@@ -599,17 +617,18 @@ class BeaconCausalLMMixin:
             loss = loss + readout_term
             parts_by_name["readout_loss"] = readout_term
         if self._mem._teacher_logits is not None:
-            consumed = sum(count for _, count in self._mem._distill_losses)
+            consumed = sum(count for _, count, _ in self._mem._distill_losses)
             if consumed != self._mem._distill_positions.numel():
                 raise RuntimeError("teacher/student KL token 数不一致，存在未读出的位置")
         if self._mem._distill_losses:
-            kd = sum(value * count for value, count in self._mem._distill_losses)
-            kd = kd / sum(count for _, count in self._mem._distill_losses)
+            kd = sum(value * mass for value, _, mass in self._mem._distill_losses)
+            kd = kd / sum(mass for _, _, mass in self._mem._distill_losses)
             kd_term = self.beacon_config.beacon_output_distill_weight * kd
             loss = loss + kd_term
             parts_by_name["kd_loss"] = kd_term
             self._mem._distill_losses = []
         self._mem._teacher_logits = None
+        self._mem._distill_weights = None
         # 未激活的项恒为 0、键序恒定，保证日志不随配置变化。
         zero = loss.detach() * 0.0
         loss_parts = {
