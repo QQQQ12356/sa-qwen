@@ -14,6 +14,9 @@
 - **混合层都只提交 Beacon 载体**：full_attention 层只持久化 beacon K/V；
   linear_attention 层把压缩窗的原生 DeltaNet/卷积状态视为临时 reader 状态，
   窗结束后丢弃，并仅由 beacon 激活经可训练 writer 重建固定尺寸循环状态。
+- **路线 A 对照**：``beacon_preserve_native_linear_state=True`` 时，线性层直接
+  提交 reader 的原生循环/卷积末态（已扫描原文和 Beacon），跳过 writer 和
+  writer readout 蒸馏；full_attention 仍只保留 Beacon K/V。这是 hybrid 信息通路。
 
 ``enable_beacon=False`` 退化为原生 ``Qwen3_5ForCausalLM`` 前向。
 """
@@ -387,7 +390,10 @@ class BeaconQwen3_5ForCausalLM(BeaconCausalLMMixin, Qwen3_5ForCausalLM):
             hidden = layer.mlp(hidden)
             hidden = residual + hidden
             if self._mem.layer_types[idx] == "linear_attention":
-                if self._mem._store == "beacon":
+                if (
+                    self._mem._store == "beacon"
+                    and not self.beacon_config.beacon_preserve_native_linear_state
+                ):
                     beacon_mask = self._mem._step_beacon_indices.bool()
                     beacon_hidden = hidden[:, beacon_mask]
                     writer = self.model.beacon_linear_writers[str(idx)]

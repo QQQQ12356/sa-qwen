@@ -52,6 +52,8 @@ class BeaconConfig:
     eval_beacon_ratio: Optional[int] = None
     #: 线性注意力层的 Beacon-only 状态写入器秩
     beacon_linear_writer_rank: int = 128
+    #: Qwen3.5 路线 A：提交 reader 原生 S/C（含 Beacon 扫描），跳过 writer；False 保持 strict 路径。
+    beacon_preserve_native_linear_state: bool = False
     beacon_question_memory_v1: bool = False
     beacon_question_max_tokens: int = 128
     beacon_readout_distill_weight: float = 0.1
@@ -118,6 +120,8 @@ class BeaconConfig:
 
     def __post_init__(self) -> None:
         """校验参数合法性。"""
+        if not isinstance(self.beacon_preserve_native_linear_state, bool):
+            raise ValueError("beacon_preserve_native_linear_state 必须为 bool")
         if not isinstance(self.beacon_window_enabled, bool):
             raise ValueError("beacon_window_enabled 必须为 bool")
         if not self.beacon_window_enabled and self.beacon_information_mode != "whole":
@@ -250,7 +254,8 @@ class BeaconConfig:
             return (f"每个 <information> 整段一次前向；pos={self.beacon_pos}；"
                     f"ratio={self.beacon_ratio}；beacon数=ceil(段长/ratio)；"
                     f"窗口参数={'启用' if self.beacon_window_enabled else '暂停'}；keep_window={keep}；"
-                    f"information 因果续写损失={'开启' if loss else '关闭'}")
+                    f"information 因果续写损失={'开启' if loss else '关闭'}；"
+                    f"Qwen3.5 native S/C={self.beacon_preserve_native_linear_state}")
         if self.beacon_information_loss is False or self.beacon_continuation_loss_weight <= 0:
             continuation = "续写监督=关闭"
         elif self.beacon_continuation_per_beacon:
@@ -269,7 +274,8 @@ class BeaconConfig:
         return (
             f"{blocks}；window={self.beacon_window} stride={self.beacon_stride} "
             f"ratio={self.beacon_ratio} → 每窗 {self.beacon_size_per_window} 个 beacon；"
-            f"keep_window={keep}；{continuation}"
+            f"keep_window={keep}；{continuation}；"
+            f"Qwen3.5 native S/C={self.beacon_preserve_native_linear_state}"
         )
 
     def merge_into_config(self, model_config: Any) -> "BeaconConfig":

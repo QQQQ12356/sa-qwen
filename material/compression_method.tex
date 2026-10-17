@@ -1,0 +1,370 @@
+% 编译：xelatex compression_method.tex
+% 基于本地当前代码整理；不包含尚未实现的片段重建方案或未经验证的效果结论。
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,booktabs}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\cfg}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\Cat}{\operatorname{Concat}}
+\newcommand{\LN}{\operatorname{LayerNorm}}
+\newcommand{\sg}{\operatorname{stopgrad}}
+\newcommand{\KL}{\operatorname{KL}}
+\title{面向多轮搜索轨迹的 Beacon 上下文压缩方法}
+\author{}
+\date{}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文描述当前仓库实现的检索正文压缩方法。
+模型在处理每轮检索结果时插入可训练的 Beacon token，
+利用因果前向将正文信息写入 Beacon 载体，随后仅提交压缩记忆。
+Qwen3 的全注意力层保留 Beacon 的逐层键值缓存；
+Qwen3.5 还使用 Beacon 激活构建线性注意力的持久循环状态。
+后续思考、检索请求和答案基于压缩记忆生成。
+训练复用已有搜索轨迹，使用 assistant 交叉熵与完整上下文教师的输出蒸馏。
+本文区分当前训练路径与可选实现分支，不报告尚未验证的性能收益。
+\end{abstract}
+
+\section{任务与轨迹表示}
+
+设一条多轮搜索轨迹为
+\begin{equation}
+X=[U,A_0,I^{-},D_1,I^{+},A_1,\ldots,I^{-},D_R,I^{+},A_R],
+\end{equation}
+其中 $U$ 包含系统指令与用户问题，$A_r$ 为 assistant 生成内容，
+包括思考、检索 query 或最终答案；$D_r=(d_{r,1},\ldots,d_{r,n_r})$
+为第 $r$ 轮检索正文，$I^{-},I^{+}$ 表示 information 开闭标签及其分隔文本。
+压缩区由数据中的 token 区间 \cfg{regions} 指定。
+当前默认每个 information 块的全部正文构成一个压缩区。
+系统提示、用户问题、information 标签、assistant 输出以及其他非正文 token
+属于 keep 内容，逐 token 保留。
+
+\section{当前使用的整段压缩路径}
+
+当前训练入口显式设置
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+配置 & 实际值 \\
+\midrule
+\cfg{beacon_information_mode} & \cfg{whole} \\
+\cfg{beacon_window_enabled} & \cfg{false} \\
+\cfg{beacon_doc_region_split} & \cfg{false} \\
+\cfg{beacon_keep_window} & $0$（每个连续 keep 段整段处理） \\
+\bottomrule
+\end{tabular}
+\end{center}
+上述设置由 \cfg{configure_whole_trajectory} 在加载 YAML 后覆盖，
+因此仅修改旧 window/stride 字段不会改变训练分段。
+三份 Beacon Search-R1 配置均采用 $\rho=16$ 的 Beacon 压缩比参数、
+append 布局和独立的 Beacon Q/K/V 投影。
+whole 表示每个 information 正文一次前向；一条多轮轨迹仍按 keep/compress 顺序逐段处理。
+
+\subsection{Beacon 数量、嵌入与插入布局}
+
+对非空正文 $D_r$，插入的 Beacon 数量为
+\begin{equation}\label{eq:count}
+m_r=\left\lceil\frac{n_r}{\rho}\right\rceil,
+\qquad B_r=(b_{r,1},\ldots,b_{r,m_r}).
+\end{equation}
+当前 append 布局将全部 Beacon 放在正文尾部：
+\begin{equation}
+\widetilde{D}_r=[d_{r,1},\ldots,d_{r,n_r},b_{r,1},\ldots,b_{r,m_r}].
+\end{equation}
+所有 Beacon 初始共享一个可训练嵌入 $e_B$，默认由 EOS 嵌入初始化。
+不同 Beacon 在不同位置经过上下文计算后得到不同激活。
+它们是模型内部插入的记忆 token，不要求模型生成对应的文本标记。
+
+\begin{equation}\label{eq:flow}
+\boxed{
+\begin{aligned}
+\text{计算：}\quad&[\mathcal{H}_r,D_r,B_r],\\
+\text{提交：}\quad&[\mathcal{H}_r,\phantom{D_r,}B_r],\\
+\text{继续：}\quad&[\mathcal{H}_r,B_r,I^{+},A_r].
+\end{aligned}}
+\end{equation}
+这里 $\mathcal{H}_r$ 表示此前已经提交的持久记忆；对混合注意力模型，
+它还包含各线性层的循环状态。
+
+\subsection{可训练的 Beacon 投影}
+
+在全注意力层 $\ell$，普通 token 使用原投影，Beacon 使用独立投影。
+设 $c_i\in\{0,1\}$ 表示当前位置是否为 Beacon，
+$F_{\ell,a}^{\mathrm{base}}$ 和 $F_{\ell,a}^{B}$ 为包含可选 bias 的仿射映射，则
+\begin{equation}
+u_{\ell,i}^{a}=(1-c_i)F_{\ell,a}^{\mathrm{base}}(h_{\ell,i})
++c_iF_{\ell,a}^{B}(h_{\ell,i}),
+\qquad a\in\{q,k,v\}.
+\end{equation}
+两套投影在初始化时复制相同的预训练参数，随后 Beacon 参数可独立更新。
+Q/K 在投影后应用模型原有的 head normalization；Qwen3.5 的 Q 投影同时产生输出门控。
+默认 \cfg{beacon_param=q k v}，O 投影共享；代码也支持显式启用独立 Beacon O 投影。
+MLP、残差连接与其他主干结构沿用原模型。
+
+\section{全注意力层的压缩与读取}
+
+\subsection{因果读取与 Beacon 汇聚}
+
+令处理当前段之前的全注意力缓存长度为 $M$，当前插入 Beacon 后长度为 $T$。
+当前 query 行 $i\in\{1,\ldots,T\}$ 对 key 列 $j\in\{1,\ldots,M+T\}$ 的掩码为
+\begin{equation}
+\mathsf{Mask}_{ij}=
+\begin{cases}
+0,&j\leq M,\\
+0,&M<j\leq M+i,\\
+-\infty,&j>M+i.
+\end{cases}
+\end{equation}
+实际实现以对应浮点类型的极小值表示屏蔽项。
+对单个注意力头，省略 batch 和层索引后有
+\begin{equation}
+O=\operatorname{softmax}\left(
+\frac{\widehat{Q}\widehat{K}^{\mathsf T}}{\sqrt{d_k}}+\mathsf{Mask}
+\right)V.
+\end{equation}
+$\widehat Q,\widehat K$ 表示归一化后再应用 RoPE 的 Q/K，
+历史和当前 K/V 在读取时拼接，GQA 按原模型规则展开 KV heads。
+Qwen3.5 在多头输出拼接后另乘 Q 投影产生的 sigmoid 门控，再应用输出投影。
+
+append 布局下，每个 Beacon 都能读取当前完整正文、此前持久记忆以及更早的 Beacon。
+比例参数 $\rho$ 决定载体数量，并不把每个 Beacon 的可见范围限制为独立的 $\rho$ 个 token。
+正文 token 位于尾部 Beacon 之前，因此无法在当前因果前向中读取这些尾部 Beacon。
+
+\subsection{仅提交 Beacon KV}
+
+设 $C_\ell^-=(K_\ell^-,V_\ell^-)$ 为处理当前段前的缓存，
+$K_\ell^B,V_\ell^B$ 为当前前向产生的 Beacon 行。
+正文处理后的提交操作为
+\begin{equation}\label{eq:commit}
+C_\ell^+=\left(
+\Cat(K_\ell^-,K_\ell^B),\Cat(V_\ell^-,V_\ell^B)
+\right).
+\end{equation}
+正文行的 K/V 不写入持久缓存；旧 keep 和旧 Beacon 缓存继续保留。
+处理 keep 段时则提交该段所有 token 的 K/V。
+因此后续 query 只能直接读取已提交的 keep 与 Beacon KV。
+训练时该缓存操作保留梯度连接；正文相关激活仍可能为反向传播而存在，
+不能将持久 KV 的减少理解为所有训练激活立即释放。
+
+\subsection{位置编码与缓存坐标}
+
+代码持久保存 RoPE 之前的 K（已完成 head normalization）和原始 V。
+每次处理新段时，令总长度为 $M+T$，
+对拼接后的全部 K 使用位置 $0,\ldots,M+T-1$，
+当前 Q 使用最后 $T$ 个位置，再施加 RoPE。
+Qwen3.5 的文本路径将同一位置序列扩展到 mRoPE 的三个位置轴。
+正文 KV 丢弃后，下次前向按压缩后的物理缓存重新编号；
+这里的位置坐标不等于原始未压缩轨迹的 token 索引，也不保证在删去正文后继续沿用原始位置号。
+
+\section{Qwen3.5 混合注意力的线性状态压缩}
+
+Qwen3 只使用上一节的全注意力缓存机制。
+Qwen3.5 的线性注意力层还维护循环矩阵状态 $S_\ell$ 和短卷积状态 $G_\ell$。
+如果直接保留处理完正文后的原生线性状态，正文信息会绕过 Beacon 载体进入后续计算。
+当前实现将原生前向作为临时 reader，仅提交从 Beacon 激活重新写出的状态。
+
+\subsection{临时 Reader 与状态提交}
+
+对压缩段，在前一持久状态 $(S_\ell^-,G_\ell^-)$ 的副本上执行原生线性注意力：
+\begin{equation}
+(H_\ell,S_\ell^{\mathrm{reader}},G_\ell^{\mathrm{reader}})
+=\operatorname{Reader}_\ell(\widetilde D_r;S_\ell^-,G_\ell^-).
+\end{equation}
+令 $Z_\ell^B$ 为该层完成 attention 残差和 MLP 残差后，在 Beacon 行提取的激活。
+默认 writer 的提交规则为
+\begin{equation}\label{eq:writer-commit}
+\boxed{
+S_\ell^+=\operatorname{Writer}_\ell(Z_\ell^B,S_\ell^-),
+\qquad G_\ell^+=\varnothing.
+}
+\end{equation}
+临时 reader 的最终循环状态和卷积状态均不提交。
+处理下一 keep 段时，从 $S_\ell^+$ 启动线性递推，卷积无跨压缩段尾部的原文缓存。
+keep 段的原生循环状态和卷积状态则正常保留。
+writer 可通过 Beacon 激活间接读取当前正文信息，且显式保留前一持久状态作为更新起点。
+
+\subsection{默认 Beacon Writer 的精确递推}
+
+对单层、单个 head 省略其索引。对第 $j$ 个 Beacon 激活 $z_j$，
+先作低秩瓶颈投影：
+\begin{align}
+f_j&=\operatorname{SiLU}(W_{\mathrm{down}}\LN(z_j)),\\
+[\bar k_j,v_j,a_j,b_j]&=W_{\mathrm{up}}f_j+b_{\mathrm{up}},\\
+k_j&=\frac{\bar k_j}{\sqrt{\|\bar k_j\|_2^2+10^{-6}}},
+\quad \lambda_j=\sigma(a_j),\quad \mu_j=\sigma(b_j).
+\end{align}
+其中 $k_j\in\mathbb{R}^{d_k}$、$v_j\in\mathbb{R}^{d_v}$，
+$\lambda_j,\mu_j$ 是每个 head 的标量门控。
+初始化 $S^{(0)}=S_\ell^-$，若无历史状态则置零，然后依次更新：
+\begin{align}
+\widetilde S^{(j)}&=\lambda_jS^{(j-1)},\\
+\widehat v_j&=(\widetilde S^{(j)})^{\mathsf T}k_j,\\
+S^{(j)}&=\widetilde S^{(j)}
++k_j\left[\mu_j(v_j-\widehat v_j)\right]^{\mathsf T},
+\qquad j=1,\ldots,m_r,\\
+S_\ell^+&=S^{(m_r)}.
+\end{align}
+状态张量形状为 $H_v\times d_k\times d_v$（省略 batch），以 float32 维护。
+默认瓶颈宽度为 \cfg{beacon_linear_writer_rank=128}；
+它限制投影中间维度，并不把持久矩阵 $S_\ell$ 参数化为秩 128 的矩阵分解。
+
+\section{训练监督与压缩参数学习}
+
+\subsection{分段 assistant 交叉熵}
+
+令 $\mathcal I$ 为有效 assistant 预测位置，位置 $i$ 预测目标 $y_{i+1}$。
+按目标 token 划分七类 segment：思考标签、思考正文、检索标签、检索正文、
+答案标签、答案正文及 other。
+对类别 $s$，令 $e_s$ 为启用开关，$w_s$ 为逐 token 权重，$\eta_s=e_sw_s$。
+\begin{equation}
+\mathcal L_{\mathrm{CE}}=
+\frac{\sum_{i\in\mathcal I}\eta_{s(i)}
+\left[-\log p_S(y_{i+1}\mid C_i^S)\right]}
+{\sum_{i\in\mathcal I}\eta_{s(i)}}.
+\end{equation}
+默认七类均启用且权重为 1，退化为有效 assistant token 的平均 CE。
+提示词、检索正文和内部 Beacon 不直接作为主 CE 目标。
+代码对每个计算窗的分母有 $10^{-6}$ 下限；上述形式适用于通常的正权重和条件。
+全部 segment 权重为零时返回零 CE。
+
+\subsection{完整上下文 Teacher 的输出蒸馏}
+
+teacher 与 student 使用同一条真实搜索轨迹进行 teacher forcing，
+两者看到相同的历史 assistant 输出。
+teacher 保留完整检索正文，student 在正文处理结束后只访问压缩记忆。
+teacher 是冻结的原生因果模型，其目标分布不依赖未来正文或未来输出。
+\begin{align}
+p_T^{\tau}(\cdot\mid C_i^T)&=\operatorname{softmax}(z_i^T/\tau),\\
+p_S^{\tau}(\cdot\mid C_i^S)&=\operatorname{softmax}(z_i^S/\tau),\\
+\mathcal L_{\mathrm{KD}}
+&=\tau^2\frac{\sum_{i\in\mathcal K}\omega_i
+\KL\left(\sg(p_T^{\tau}(\cdot\mid C_i^T))\,
+\|\,p_S^{\tau}(\cdot\mid C_i^S)\right)}
+{\sum_{i\in\mathcal K}\omega_i}.
+\end{align}
+当前默认策略 \cfg{all} 选择全部有效 assistant keep 预测行，包含首次检索前输出，
+并非只监督每次压缩后的前几个 token。
+普通 KD 令 $\omega_i=1$，默认温度 $\tau=1$、外层权重 $\gamma=0.1$。
+若传入 segment id，零权重类别不会进入 KD 选择集；正的 segment 权重大小不直接乘到 KD。
+
+主 CE 和 KD 均通过后续隐藏状态及持久记忆向 Beacon 嵌入、投影、
+Qwen3.5 writer 和其他可训练参数反向传播，无需为检索块额外生成问题或答案。
+LoRA 模式下主干基础参数冻结，配置中的 LoRA 参数可训练，名称包含
+\cfg{beacon} 的压缩参数保持全量可训练；非 LoRA 模式不施加这层冻结。
+
+\subsection{当前配置对应的总目标}
+
+Qwen3 配置与 Qwen3.5 whole 配置显式关闭 information 续写损失，
+且 readout 权重为零，其常规目标为
+\begin{equation}\label{eq:default-loss}
+\boxed{\mathcal L=\mathcal L_{\mathrm{CE}}+0.1\mathcal L_{\mathrm{KD}}.}
+\end{equation}
+\cfg{beacon_qwen35_searchr1.yaml} 的续写权重为 $0.1$，
+且没有显式关闭 information loss；当本次确有续写监督时：
+\begin{equation}
+\mathcal L=\frac{\mathcal L_{\mathrm{CE}}+0.1\mathcal L_{\mathrm{cont}}}{1.1}
++0.1\mathcal L_{\mathrm{KD}}.
+\end{equation}
+whole + append 的续写 CE 由原文行预测原文下一 token；
+由于这些行看不到尾部 Beacon，不能将它等同于原文删除后的 Beacon 重建监督。
+全部损失组合与七类 segment 的逐项展开见同目录 \cfg{loss_formulations.tex}。
+
+\section{可选分支及其与当前默认的关系}
+
+\paragraph{Intersect 和旧 window 模式}
+代码支持每 $\rho$ 个原文 token 后插入一个 Beacon 的 intersect 布局，
+以及逐窗口提交压缩状态的旧 window 模式。
+intersect 仅改变插入顺序；同一前向段内仍采用完整因果可见性，
+后面的 token 能读取更早 chunk 的原文，chunk 之间没有独立隔离掩码。
+原文状态的隔离发生在处理段结束后的提交边界。
+当前训练入口固定 whole、关闭子文档切分，主配置使用 append；
+开展 window 或子文档切分实验需要同步调整入口覆盖逻辑。
+
+\paragraph{文档依赖加权 KD}
+可选删除最近一次已提交压缩区的正文，对同一冻结 teacher 作删除对照。
+令 $p_i^{+}$ 为完整上下文分布，$p_i^{-}$ 为删除版分布，
+二者使用相同温度和真实 assistant 前缀，则
+\begin{align}
+q_i&=\tfrac12(p_i^{+}+p_i^{-}),\\
+J_i&=\tfrac12\KL(p_i^{+}\|q_i)+\tfrac12\KL(p_i^{-}\|q_i),\\
+\omega_i&=\sg\left[\varepsilon+
+\operatorname{clip}\left(J_i/\log 2,0,1\right)\right].
+\end{align}
+首次检索前没有可删除区域的位置取 $\omega_i=\varepsilon$。
+该分支通过 \cfg{beacon_output_distill_doc_weighting} 开启，默认关闭；
+默认 $\varepsilon=0.1$。它改变 KD 的位置权重，不改变推理压缩结构。
+\cfg{prefix} 和 \cfg{stratified} 蒸馏位置采样也作为可选分支保留。
+
+\paragraph{问题条件 Writer 与 Readout}
+Qwen3.5 可选 \cfg{beacon_question_memory_v1}：问题特征通过低秩投影加到 Beacon 激活，
+并结合相关性与新颖性控制 writer 更新，还可用问题 probe 对齐 reader 与 writer 的状态读出。
+该 writer 的门控公式与前文默认 writer 不同。
+当前三份 Beacon Search-R1 配置均关闭此分支且 readout 权重为零。
+Qwen3 不含线性 writer 或 readout。
+
+\section{多轮推理与缓存复用}
+
+在线生成按以下顺序推进：
+\begin{enumerate}
+\item 首次处理系统指令、用户问题与已知前缀，建立 keep 缓存。
+\item 自回归生成思考与 search query；生成 token 的缓存逐步提交。
+\item 检索器返回正文，将新增 information 标签和正文传给模型，
+以相对于新增输入的 \cfg{regions} 指定压缩区。
+\item 开启 \cfg{reuse_cache=true}，仅处理新增输入；
+正文经过 Beacon 编码后按式~\eqref{eq:commit} 及式~\eqref{eq:writer-commit} 提交。
+\item 从压缩记忆继续生成后续 query 或 answer，直到停止条件触发。
+\end{enumerate}
+推理不加载蒸馏 teacher，也不执行删除对照分支。
+keep 内容和历史 Beacon 持续累积，当前机制不额外压缩历史 assistant 输出。
+
+\section{持久缓存规模与适用边界}
+
+设到当前为止保留的 keep token 数为 $N_K$，
+累计检索正文长度为 $N_D=\sum_r n_r$，累计 Beacon 数为 $N_B=\sum_r m_r$。
+全注意力层的持久 KV 长度由 $N_K+N_D$ 变为
+\begin{equation}
+N_{\mathrm{KV}}^{\mathrm{compressed}}=N_K+N_B
+=N_K+\sum_r\left\lceil n_r/\rho\right\rceil.
+\end{equation}
+持久缓存长度比为
+\begin{equation}
+\chi=\frac{N_K+\sum_r\lceil n_r/\rho\rceil}{N_K+\sum_r n_r}.
+\end{equation}
+正文足够长时，正文 KV 部分约缩至 $1/\rho$；
+总缓存缩减比例取决于未压缩的 keep 内容占比和各段向上取整开销。
+对全注意力层集合 $\mathcal F$，KV 元素数量为
+\begin{equation}
+\mathrm{Elements}_{\mathrm{KV}}
+=2(N_K+N_B)\sum_{\ell\in\mathcal F}H_{\mathrm{KV},\ell}d_{\mathrm{head},\ell}.
+\end{equation}
+线性层的循环状态元素数为
+\begin{equation}
+\mathrm{Elements}_{\mathrm{linear}}
+=\sum_{\ell\in\mathcal G}H_{v,\ell}d_{k,\ell}d_{v,\ell},
+\end{equation}
+另有 keep 段更新的固定长度卷积状态；线性状态本身不随正文长度增长。
+此方法控制它的写入来源，不把它缩成 $1/\rho$ 大小。
+
+持久 KV 压缩不等价于同比例减少训练峰值显存或预填充计算量。
+whole + append 在编码时仍计算完整正文及 Beacon 的因果注意力，
+当前全注意力实现显式形成注意力矩阵；蒸馏还增加完整上下文 teacher 前向。
+实际显存、延迟和 EM/F1 改善需要单独实验验证，本文未给出测量结果。
+
+\section{代码对应关系}
+
+\begin{itemize}
+\item \cfg{search_comp/data/searchr1_dataset.py}：轨迹编码、正文压缩区与主 CE mask。
+\item \cfg{search_comp/trainer/beacon_trainer.py}：整段训练覆盖、LoRA 与可训练参数。
+\item \cfg{search_comp/models/beacon_common.py}：Beacon 数量、布局、因果掩码、
+KV 提交、RoPE 坐标、损失聚合与增量生成。
+\item \cfg{search_comp/models/beacon_qwen3.py}：Qwen3 全注意力投影与缓存读取。
+\item \cfg{search_comp/models/beacon_qwen35.py}：Qwen3.5 混合层、临时 reader、默认 writer。
+\item \cfg{search_comp/models/beacon_question_memory.py}：可选问题条件 writer 和 readout。
+\item \cfg{search_comp/trainer/beacon_distillation_trainer.py}：冻结 teacher、KD 位置选择和删除对照。
+\item \cfg{configs/train/beacon_qwen3_searchr1.yaml}、
+\cfg{configs/train/beacon_qwen35_searchr1.yaml}、
+\cfg{configs/train/beacon_qwen35_whole_searchr1.yaml}：本文所述配置取值。
+\end{itemize}
+
+\end{document}

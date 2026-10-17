@@ -71,6 +71,63 @@ def test_compressed_region_commits_only_beacon_linear_state():
 
 
 @pytest.mark.parametrize("beacon_pos", ["append", "intersect"])
+@pytest.mark.parametrize("information_mode", ["window", "whole"])
+def test_native_linear_state_survives_compression(monkeypatch, beacon_pos, information_mode):
+    model = _tiny_model(beacon_pos)
+    cfg = BeaconConfig.from_dict({
+        **model.beacon_config.to_dict(),
+        "beacon_preserve_native_linear_state": True,
+        "beacon_information_mode": information_mode,
+    })
+    model.set_beacon_config(cfg)
+    states = []
+    native_reader = model._linear_attention_forward
+
+    def record_reader(module, hidden, previous_recurrent, previous_conv):
+        if states:
+            torch.testing.assert_close(previous_recurrent, states[-1][0])
+            torch.testing.assert_close(previous_conv, states[-1][1])
+        result = native_reader(module, hidden, previous_recurrent, previous_conv)
+        states.append(result[1:])
+        return result
+
+    monkeypatch.setattr(model, "_linear_attention_forward", record_reader)
+    with patch.object(model.model.beacon_linear_writers["0"], "forward", side_effect=AssertionError("writer must be bypassed")):
+        ids = torch.tensor([[10, 11, 20, 21, 22, 23, 24]])
+        memory = model.prefill_and_get_cache(ids, regions=[(2, 7)])
+        assert memory._linear_recurrent[0] is states[-1][0]
+        assert memory._linear_conv[0] is states[-1][1]
+        # 两个 keep token + ceil(5/2) 个 Beacon，原文 KV 仍被丢弃。
+        assert memory._cache[1][0].shape[2] == 5
+        assert torch.isfinite(model.decode_step(torch.tensor([[30]]))).all()
+
+
+def test_native_linear_state_has_document_gradient_without_writer():
+    model = _tiny_model().train()
+    model.beacon_config.beacon_preserve_native_linear_state = True
+    ids = torch.tensor([[10, 11, 20, 21, 22, 23, 30, 31]])
+    labels = torch.full_like(ids, -100)
+    labels[:, -2:] = ids[:, -2:]
+    output = model(input_ids=ids, labels=labels, compress_regions=[(2, 6)])
+    output.loss.backward()
+    assert model.model.embed_tokens.weight.grad[20:24].abs().sum() > 0
+    assert all(p.grad is None for p in model.model.beacon_linear_writers.parameters())
+
+
+def test_native_linear_state_config_roundtrip(tmp_path):
+    model = _tiny_model()
+    model.set_beacon_config(BeaconConfig.from_dict({
+        **model.beacon_config.to_dict(), "beacon_preserve_native_linear_state": True,
+    }))
+    model.save_pretrained(tmp_path)
+    restored = BeaconQwen3_5ForCausalLM.from_pretrained(tmp_path)
+    assert restored.beacon_config.beacon_preserve_native_linear_state is True
+    assert BeaconConfig().beacon_preserve_native_linear_state is False
+    with pytest.raises(ValueError, match="beacon_preserve_native_linear_state"):
+        BeaconConfig(beacon_preserve_native_linear_state="false")
+
+
+@pytest.mark.parametrize("beacon_pos", ["append", "intersect"])
 def test_linear_writer_receives_gradient_from_post_compression_tokens(beacon_pos):
     torch.manual_seed(7)
     model = _tiny_model(beacon_pos).train()

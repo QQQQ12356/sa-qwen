@@ -8,7 +8,7 @@ outputs/data/
 outputs/logs/
 outputs/results/
 outputs/*.json
-
+outputs/
 # 例外：已入库的小体积证据产物继续跟踪（tracked 文件不受本文件影响）：
 #   outputs/results/*/predictions*.jsonl       评测逐题轨迹
 #   outputs/results/*/predictions_metrics.json 汇总指标
@@ -35,3 +35,5 @@ venv/
 .vscode/
 *.swp
 .DS_Store
+
+sa_v2.md

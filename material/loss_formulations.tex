@@ -1,0 +1,397 @@
+% 编译：xelatex loss_formulations.tex（需要 ctex / amsmath / booktabs）。
+% 公式依据当前仓库实现；各公式可独立复制到论文的数学环境中。
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,longtable}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\CE}{\mathcal{L}_{\mathrm{CE}}}
+\newcommand{\CT}{\mathcal{L}_{\mathrm{cont}}}
+\newcommand{\KD}{\mathcal{L}_{\mathrm{KD}}}
+\newcommand{\RO}{\mathcal{L}_{\mathrm{readout}}}
+\newcommand{\KL}{\operatorname{KL}}
+\newcommand{\sg}{\operatorname{stopgrad}}
+\newcommand{\cfg}[1]{\texttt{\detokenize{#1}}}
+\title{当前训练损失的组合与分段 CE 公式}
+\author{}
+\date{}
+\begin{document}
+\maketitle
+
+\section{符号、配置与组合规则}
+
+本文描述 Beacon 训练路径。$\CE,\CT,\KD,\RO$ 表示尚未乘以外层配置权重的原始损失。
+四个外层非负权重分别记为 $\alpha,\beta,\gamma,\delta$：
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+原始损失 & 外层权重的配置字段 & 日志字段 \\
+\midrule
+$\CE$ & \cfg{beacon_ce_loss_weight} ($\alpha$) & \cfg{ce_loss} \\
+$\CT$ & \cfg{beacon_continuation_loss_weight} ($\beta$) & \cfg{cont_loss} \\
+$\KD$ & \cfg{beacon_output_distill_weight} ($\gamma$) & \cfg{kd_loss} \\
+$\RO$ & \cfg{beacon_readout_distill_weight} ($\delta$) & \cfg{readout_loss} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+日志保存的是乘权重、按规则归一化之后的贡献，因此四个日志字段相加等于总损失。
+这里的 KD 专指输出分布的 KL 蒸馏；readout 是另一项独立的状态读出蒸馏。
+
+设 $a_C,a_T,a_K,a_R\in\{0,1\}$ 表示相应项本次是否实际参与：
+权重必须为正，且前向必须产生对应的损失项。
+权重为正但本次没有监督点时，该项仍然缺席。
+CE 的参与判断按照代码中的聚合结果是否为 \cfg{None}；
+如果产生了 CE 张量，但所有 segment 权重为零，则 $\CE=0$，该项仍可被计入 CE/续写的归一化分母。
+
+\begin{equation}
+D(a_C,a_T)=
+\begin{cases}
+\alpha+\beta, & a_C=a_T=1,\\
+1, & a_C+a_T\leq 1.
+\end{cases}
+\end{equation}
+\begin{equation}\label{eq:total}
+\boxed{
+\mathcal{L}
+=\frac{a_C\alpha\CE+a_T\beta\CT}{D(a_C,a_T)}
++a_K\gamma\KD+a_R\delta\RO .
+}
+\end{equation}
+
+CE 与续写同时参与时才除以 $\alpha+\beta$；仅有一项时直接乘其权重。
+KD 和 readout 始终是独立加项，它们的权重不进入此分母。
+缺席项在式~\eqref{eq:total} 中按零贡献处理，无需定义空监督集上的平均值。
+
+\section{全部 16 种损失组合}
+
+下表的开关次序为 $(a_C,a_T,a_K,a_R)$。每行未出现的损失项贡献均为零；
+可将它们的外层权重设为零以明确关闭。
+
+\begin{longtable}{cll}
+\toprule
+开关 & 参与项 & 总损失 $\mathcal{L}$ \\
+\midrule
+\endhead
+$(0,0,0,0)$ & 全部关闭 & $0$ \\
+$(1,0,0,0)$ & 仅主 CE & $\alpha\CE$ \\
+$(0,1,0,0)$ & 仅续写 CE & $\beta\CT$ \\
+$(0,0,1,0)$ & 仅输出 KD & $\gamma\KD$ \\
+$(0,0,0,1)$ & 仅 readout & $\delta\RO$ \\
+\addlinespace
+$(1,1,0,0)$ & CE + 续写 & $\dfrac{\alpha\CE+\beta\CT}{\alpha+\beta}$ \\[6pt]
+$(1,0,1,0)$ & CE + KD & $\alpha\CE+\gamma\KD$ \\
+$(1,0,0,1)$ & CE + readout & $\alpha\CE+\delta\RO$ \\
+$(0,1,1,0)$ & 续写 + KD & $\beta\CT+\gamma\KD$ \\
+$(0,1,0,1)$ & 续写 + readout & $\beta\CT+\delta\RO$ \\
+$(0,0,1,1)$ & KD + readout & $\gamma\KD+\delta\RO$ \\
+\addlinespace
+$(1,1,1,0)$ & CE + 续写 + KD & $\dfrac{\alpha\CE+\beta\CT}{\alpha+\beta}+\gamma\KD$ \\[6pt]
+$(1,1,0,1)$ & CE + 续写 + readout & $\dfrac{\alpha\CE+\beta\CT}{\alpha+\beta}+\delta\RO$ \\[6pt]
+$(1,0,1,1)$ & CE + KD + readout & $\alpha\CE+\gamma\KD+\delta\RO$ \\
+$(0,1,1,1)$ & 续写 + KD + readout & $\beta\CT+\gamma\KD+\delta\RO$ \\
+$(1,1,1,1)$ & 四项全部参与 & $\dfrac{\alpha\CE+\beta\CT}{\alpha+\beta}+\gamma\KD+\delta\RO$ \\[6pt]
+\bottomrule
+\end{longtable}
+
+例如，只有主 CE 且 $\alpha=1$ 时为 $\mathcal{L}=\CE$；
+CE 与 KD 共存且 $\alpha=1,\gamma=0.1$ 时为
+\begin{equation}
+\mathcal{L}=\CE+0.1\KD.
+\end{equation}
+如果续写也实际参与，$\alpha=1,\beta=0.1,\gamma=0.1$ 时则为
+\begin{equation}
+\mathcal{L}=\frac{\CE+0.1\CT}{1.1}+0.1\KD.
+\end{equation}
+
+\paragraph{实际启用条件}
+续写还要求 \cfg{beacon_information_loss} 不为 \cfg{false}，并产生有效续写目标。
+readout 目前由 Qwen3.5 的 question-conditioned writer 在训练时产生，要求
+\cfg{beacon_question_memory_v1=true}，且存在压缩窗口及相应线性注意力层。
+Qwen3 路径不会产生此 readout 项。
+输出 KD 要求训练器提供冻结 teacher，并选到有效预测位置。
+因此表中是四项的完整组合空间，实际能否出现还取决于模型和样本。
+需要纯 KD 时设置 $\alpha=\beta=\delta=0,\gamma>0$，
+并将 \cfg{beacon_information_loss=false}。
+全部关闭时，代码返回保留计算图的零损失。
+
+\paragraph{仓库配置示例}
+当前 \cfg{configs/train/beacon_qwen35_searchr1.yaml} 使用
+$(\alpha,\beta,\gamma,\delta)=(1,0.1,0.1,0)$，
+\cfg{beacon_information_mode=whole}；有有效续写目标时对应 CE + 续写 + KD。
+\cfg{beacon_qwen35_whole_searchr1.yaml} 和 \cfg{beacon_qwen3_searchr1.yaml}
+显式设置 \cfg{beacon_information_loss=false}，虽然 $\beta=0.1$，续写仍关闭，
+有有效监督和蒸馏位置时对应 CE + KD。
+
+\section{各原始损失的定义}
+
+以下按单条轨迹书写；当前 Beacon 要求 batch size 为 1。
+令原始序列为 $x_1,\ldots,x_L$，$z_i^S$ 为 student 在原始预测位置 $i$
+对应的 logits，监督目标为 $y_{i+1}$。
+代码对 labels 和 segment id 同步左移一位，故权重属于被预测的 token，
+而不是预测行自身的 token。
+令 $\mathcal{I}$ 为主 CE 中实际使用的有效预测行集合（目标标签不为 $-100$，Beacon 补位不计入）。
+在标准轨迹数据中，这些监督来自 assistant 输出，提示词和检索正文被 mask。
+不启用 segment 加权时：
+\begin{equation}\label{eq:ce-basic}
+\ell_i=-\log\left[\operatorname{softmax}(z_i^S)\right]_{y_{i+1}},
+\qquad
+\CE=\frac{1}{|\mathcal{I}|}\sum_{i\in\mathcal{I}}\ell_i.
+\end{equation}
+无有效 CE 标签时主 CE 项缺席；分段加权形式见最后一节。
+
+\subsection{文档续写损失}
+
+令 $\mathcal{W}_{\mathrm{cont}}$ 为产生有效续写目标的处理窗口集合；
+$\mathcal{U}_w$ 是窗口 $w$ 的有效 $(r,u)$ 配对集合，
+表示由该窗口的隐状态行 $r$ 预测原文目标 $x_u$。
+\begin{equation}\label{eq:cont}
+\CT=\frac{1}{|\mathcal{W}_{\mathrm{cont}}|}
+\sum_{w\in\mathcal{W}_{\mathrm{cont}}}
+\left[
+\frac{1}{|\mathcal{U}_w|}
+\sum_{(r,u)\in\mathcal{U}_w}
+-\log\left[\operatorname{softmax}(W_{\mathrm{LM}}h_{w,r})\right]_{x_u}
+\right].
+\end{equation}
+这里先在每窗内平均，再对有目标的窗口等权平均，并非跨窗口统一按 token 数平均。
+该损失使用原始 input ids 构造目标，不使用七类 segment 的权重。
+
+\begin{itemize}
+\item \cfg{whole} 模式：对每个 information 压缩区内部的相邻原始 token
+进行因果续写。若压缩区为 $x_a,\ldots,x_b$，配对为
+$\{(\operatorname{row}(i),i+1):a\leq i<b\}$，不跨压缩区边界。
+\item \cfg{window} 且 \cfg{beacon_continuation_per_beacon=false}：
+仅 append 布局中压缩区非首窗的窗头预测行参与，最多取
+\cfg{beacon_continuation_tokens} 个目标，并裁剪到窗口及压缩区边界。
+\item \cfg{window} 且 \cfg{beacon_continuation_per_beacon=true}：
+每个 chunk 的 Beacon 行预测紧随 chunk 后的至多 $k$ 个 token，
+这些目标共享同一隐状态行；目标不越过压缩区末端，补齐的 $-100$ 不计损失。
+\end{itemize}
+
+\subsection{输出 KD：普通 KL 与文档依赖加权 KL}
+
+令 $\tau>0$ 为 \cfg{beacon_output_distill_temperature}，
+teacher 保留完整原文，student 使用压缩后的因果上下文：
+\begin{align}
+p_i^T(v;\tau)&=\left[\operatorname{softmax}(z_i^T/\tau)\right]_v,\\
+p_i^S(v;\tau)&=\left[\operatorname{softmax}(z_i^S/\tau)\right]_v,\\
+d_i&=\KL\bigl(\sg(p_i^T)\,\|\,p_i^S\bigr)
+=\sum_{v\in\mathcal{V}}p_i^T(v;\tau)
+\log\frac{p_i^T(v;\tau)}{p_i^S(v;\tau)}.
+\end{align}
+令 $\mathcal{K}$ 为采样到的有效 keep 预测行，$\omega_i$ 为蒸馏权重，则
+\begin{equation}\label{eq:kd}
+\boxed{\KD=\tau^2\frac{\sum_{i\in\mathcal{K}}\omega_i d_i}
+{\sum_{i\in\mathcal{K}}\omega_i}.}
+\end{equation}
+普通 KD 为 $\omega_i=1$。
+\cfg{all} 选择全部有效 keep 预测行，包括首次检索前的位置；
+\cfg{prefix} 在每个压缩后 keep 段选择前 $k$ 个有效位置；
+\cfg{stratified} 在各段内按思考开头、思考均匀位置、检索正文和答案正文轮流分配预算，
+不足时用标签及 other 补齐。
+若有 segment id，权重为零的 segment 会被排除；
+正的 segment 权重大小不直接乘到 KD 上。
+
+启用 \cfg{beacon_output_distill_doc_weighting} 后，
+令 $d(i)$ 为位置 $i$ 之前最近提交的压缩区，
+$p_i^{T,+}$ 为完整上下文 teacher 分布，$p_i^{T,-d(i)}$ 为
+仅删除该区正文后 teacher 的分布，两者都使用温度 $\tau$。
+\begin{align}
+m_i&=\tfrac12\bigl(p_i^{T,+}+p_i^{T,-d(i)}\bigr),\\
+\operatorname{JS}_i
+&=\tfrac12\KL(p_i^{T,+}\|m_i)
++\tfrac12\KL(p_i^{T,-d(i)}\|m_i),\\
+\omega_i&=\sg\left(\varepsilon+
+\operatorname{clip}\left(\frac{\operatorname{JS}_i}{\log 2},0,1\right)\right).
+\end{align}
+其中 $\varepsilon$ 来自 \cfg{beacon_output_distill_doc_epsilon}，
+没有先前压缩区可作删除对照的位置取 $\omega_i=\varepsilon$。
+删除对照按压缩 region 进行；只有启用子文档拆分时，region 才对应单篇子文档。
+该形式替换式~\eqref{eq:kd} 的权重，不增加第五种独立损失。
+teacher 和 $\omega_i$ 均不反向传播梯度。
+
+\subsection{Readout 状态蒸馏}
+
+令 $\mathcal{A}$ 为实际产生 readout 损失的（压缩窗口，线性层）集合。
+对 $a\in\mathcal{A}$，$S_a^S$ 是 writer 写出的状态，
+$S_a^T$ 是 reader 处理原始窗口得到的循环状态，$q_a$ 是当前问题隐状态。
+probe 与当前 writer 的参数共享，但构造 probe 和 teacher 目标时停止梯度。
+\begin{align}
+P_a&=\sg\left(\operatorname{normalize}_{\mathrm{key}}
+\left(\operatorname{reshape}_{\mathrm{heads}}
+\left[W_{\mathrm{up},a}\operatorname{SiLU}
+\left(W_{\mathrm{down},a}\operatorname{Norm}_a(\sg(q_a))\right)
+\right]_{\mathrm{key}}\right)\right),\\
+\widehat{Y}_{a,bthv}&=\sum_k P_{a,bthk}S^S_{a,bhkv},
+\qquad
+Y_{a,bthv}=\sg\left(\sum_k P_{a,bthk}S^T_{a,bhkv}\right),\\
+\RO&=\frac{1}{|\mathcal{A}|}\sum_{a\in\mathcal{A}}
+\frac{\operatorname{mean}_{b,t,h,v}
+\left[(\widehat{Y}_a-Y_a)^2\right]}
+{\max\left(\operatorname{mean}_{b,t,h,v}[Y_a^2],10^{-4}\right)}.
+\end{align}
+这里 $b,t,h,k,v$ 分别索引 batch、问题 token、注意力头、key 和 value 维。
+
+\section{实现来源}
+
+\begin{itemize}
+\item \cfg{search_comp/models/beacon_common.py}：
+\cfg{_beacon_forward}（组合及日志），\cfg{_sparse_window_loss}（CE），
+\cfg{_output_distillation_loss}（KD），\cfg{_build_cont_rows_labels}（续写配对）。
+\item \cfg{search_comp/trainer/beacon_distillation_trainer.py}：
+\cfg{select_distillation_positions} 与 \cfg{document_dependency_weights}。
+\item \cfg{search_comp/models/beacon_question_memory.py}：\cfg{readout_loss}。
+\item \cfg{search_comp/models/beacon_qwen35.py}：readout 实际触发条件。
+\item \cfg{search_comp/loss_segments.py}：七类 segment 及逐 token 权重语义。
+\end{itemize}
+
+\section{最后：主 CE 按各个 segment 分块的损失形式}
+
+\subsection{七类 segment 与各自的 CE}
+
+令 $\mathcal{I}_s$ 为类别 $s$ 中有效预测行的集合。
+类别由目标 token 的 segment id 确定，同一类别可汇集轨迹中多次出现的片段。
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+$s$ & 配置字段 & 片段含义 \\
+\midrule
+tt & \cfg{think_tag} & 思考开闭标签（兼容 think / thinking） \\
+tc & \cfg{think_content} & 思考正文 \\
+st & \cfg{search_tag} & 检索开闭标签 \\
+sc & \cfg{search_content} & 检索 query 正文 \\
+at & \cfg{answer_tag} & 答案开闭标签 \\
+ac & \cfg{answer_content} & 最终答案正文 \\
+o & \cfg{other} & 其余被监督的 assistant token \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+定义每类 token 数及损失总和；每类平均损失在该类非空时定义：
+\begin{equation}
+n_s=|\mathcal{I}_s|,\qquad
+E_s=\sum_{i\in\mathcal{I}_s}\ell_i,\qquad
+\mathcal{L}_s=\frac{E_s}{n_s}\quad(n_s>0).
+\end{equation}
+逐类展开为
+\begin{align}
+\mathcal{L}_{\mathrm{think\_tag}}
+&=-\frac{1}{n_{tt}}\sum_{i\in\mathcal{I}_{tt}}\log p_i^S(y_{i+1};1),\\
+\mathcal{L}_{\mathrm{think\_content}}
+&=-\frac{1}{n_{tc}}\sum_{i\in\mathcal{I}_{tc}}\log p_i^S(y_{i+1};1),\\
+\mathcal{L}_{\mathrm{search\_tag}}
+&=-\frac{1}{n_{st}}\sum_{i\in\mathcal{I}_{st}}\log p_i^S(y_{i+1};1),\\
+\mathcal{L}_{\mathrm{search\_content}}
+&=-\frac{1}{n_{sc}}\sum_{i\in\mathcal{I}_{sc}}\log p_i^S(y_{i+1};1),\\
+\mathcal{L}_{\mathrm{answer\_tag}}
+&=-\frac{1}{n_{at}}\sum_{i\in\mathcal{I}_{at}}\log p_i^S(y_{i+1};1),\\
+\mathcal{L}_{\mathrm{answer\_content}}
+&=-\frac{1}{n_{ac}}\sum_{i\in\mathcal{I}_{ac}}\log p_i^S(y_{i+1};1),\\
+\mathcal{L}_{\mathrm{other}}
+&=-\frac{1}{n_o}\sum_{i\in\mathcal{I}_o}\log p_i^S(y_{i+1};1).
+\end{align}
+以上各行仅在对应 $n_s>0$ 时使用；空类别在总损失中贡献 $E_s=0$。
+
+\subsection{按 token 权重归一化的主 CE}
+
+设 $e_s\in\{0,1\}$ 对应 \cfg{enabled}，$w_s\geq0$ 对应 \cfg{weight}，
+实际逐 token 权重 $\eta_s=e_sw_s$。
+\begin{equation}\label{eq:segment-ce}
+\boxed{
+\CE^{\mathrm{seg}}=
+\frac{\displaystyle\sum_{s\in\{tt,tc,st,sc,at,ac,o\}}\eta_s E_s}
+{\displaystyle\sum_{s\in\{tt,tc,st,sc,at,ac,o\}}\eta_s n_s}.
+}
+\end{equation}
+当分母非零，且各非空处理窗的权重和至少为 $10^{-6}$ 时，
+这与代码的跨窗口聚合一致。展开为七个分块：
+\begin{equation}
+\boxed{
+\CE^{\mathrm{seg}}=
+\frac{
+\eta_{tt}E_{tt}+\eta_{tc}E_{tc}+\eta_{st}E_{st}+\eta_{sc}E_{sc}
++\eta_{at}E_{at}+\eta_{ac}E_{ac}+\eta_oE_o
+}{
+\eta_{tt}n_{tt}+\eta_{tc}n_{tc}+\eta_{st}n_{st}+\eta_{sc}n_{sc}
++\eta_{at}n_{at}+\eta_{ac}n_{ac}+\eta_on_o
+}.
+}
+\end{equation}
+也可写为按类别平均损失混合的形式：
+\begin{equation}
+\CE^{\mathrm{seg}}
+=\sum_{s:n_s>0}\pi_s\mathcal{L}_s,
+\qquad
+\pi_s=\frac{\eta_s n_s}{\sum_u\eta_u n_u},
+\qquad \sum_s\pi_s=1.
+\end{equation}
+因此类别份额取决于权重和该类 token 数。
+当前实现不是 $\sum_s\eta_s\mathcal{L}_s/\sum_s\eta_s$ 的类别等权平均。
+
+\paragraph{常见 segment 配置}
+全部启用且权重为 1 时退化为普通 token 平均：
+\begin{equation}
+\CE^{\mathrm{seg}}=\frac{\sum_s E_s}{\sum_s n_s}=\CE.
+\end{equation}
+只监督最终答案正文（仅 $\eta_{ac}>0$）时：
+\begin{equation}
+\CE^{\mathrm{seg}}=\frac{E_{ac}}{n_{ac}}=\mathcal{L}_{\mathrm{answer\_content}}.
+\end{equation}
+只监督检索正文和答案正文时：
+\begin{equation}
+\CE^{\mathrm{seg}}=\frac{\eta_{sc}E_{sc}+\eta_{ac}E_{ac}}
+{\eta_{sc}n_{sc}+\eta_{ac}n_{ac}}.
+\end{equation}
+答案正文加权为 $\rho>0$，其余类别权重均为 1 时：
+\begin{equation}
+\CE^{\mathrm{seg}}=\frac{\rho E_{ac}+\sum_{s\ne ac}E_s}
+{\rho n_{ac}+\sum_{s\ne ac}n_s}.
+\end{equation}
+关闭思考正文、其余类别权重为 1 时：
+\begin{equation}
+\CE^{\mathrm{seg}}=\frac{\sum_{s\ne tc}E_s}{\sum_{s\ne tc}n_s}.
+\end{equation}
+所有类别关闭或加权有效 token 数为零时，主 CE 返回零。
+以上非零分母公式采用式~\eqref{eq:segment-ce} 的通常数值条件。
+
+\paragraph{数值保护与 LM-head 计算分块}
+若需逐字对应实现中的极小权重保护，令 $w$ 索引实际进入主 CE 聚合的处理窗，
+其有效位置被拆成 LM-head 计算块 $\mathcal{C}_{w,j}$，则
+\begin{align}
+A_w&=\sum_j\sum_{i\in\mathcal{C}_{w,j}}\eta_{s(i)}\ell_i,
+&M_w&=\sum_j\sum_{i\in\mathcal{C}_{w,j}}\eta_{s(i)},\\
+\CE^{\mathrm{exact}}&=
+\begin{cases}
+\displaystyle\frac{\sum_w M_w\,A_w/\max(M_w,10^{-6})}{\sum_w M_w},
+&\sum_w M_w>0,\\[6pt]
+0,&\sum_w M_w=0.
+\end{cases}
+\end{align}
+无任何主 CE 聚合窗时，该项缺席。
+\cfg{beacon_loss_chunk_size} 控制这里的计算块大小；
+它与七类语义 segment 是不同层面的划分。
+代码对计算块累加损失总和，不对各计算块的平均值再作等权平均。
+
+\paragraph{代回总损失}
+用 $\CE^{\mathrm{seg}}$ 替换所有组合中的主 CE 即可。
+例如 CE + KD 为
+\begin{equation}
+\boxed{
+\mathcal{L}=\alpha\,
+\frac{\sum_s\eta_s E_s}{\sum_s\eta_s n_s}
++\gamma\tau^2
+\frac{\sum_{i\in\mathcal{K}}\omega_i\KL(p_i^T\|p_i^S)}
+{\sum_{i\in\mathcal{K}}\omega_i}.
+}
+\end{equation}
+CE、续写、KD、readout 全部实际参与时为
+\begin{equation}
+\boxed{
+\mathcal{L}=
+\frac{\displaystyle\alpha
+\frac{\sum_s\eta_s E_s}{\sum_s\eta_s n_s}+\beta\CT}
+{\alpha+\beta}
++\gamma\KD+\delta\RO.
+}
+\end{equation}
+\end{document}
